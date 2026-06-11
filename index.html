@@ -12,17 +12,21 @@
             position: absolute; top: 10px; left: 50px; z-index: 1000;
             background: white; padding: 15px; border-radius: 8px;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.2); max-width: 280px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.2); width: 260px;
         }
         .status-badge {
-            display: inline-block; padding: 3px 8px; border-radius: 12px;
-            font-size: 12px; font-weight: bold; color: white; margin-bottom: 8px;
+            display: inline-block; padding: 4px 10px; border-radius: 12px;
+            font-size: 12px; font-weight: bold; color: white; margin-bottom: 10px;
+            text-transform: uppercase;
         }
         .online { background: #2ecc71; }
+        .stationary { background: #3498db; } /* Nice blue color for idling */
         .offline { background: #e74c3c; }
         
+        .time-row { margin-bottom: 6px; font-size: 13px; color: #333; }
+        
         select {
-            width: 100%; padding: 6px; margin-top: 8px;
+            width: 100%; padding: 6px; margin-top: 10px;
             border-radius: 4px; border: 1px solid #ccc; font-size: 13px;
         }
         
@@ -35,8 +39,9 @@
 <body>
 
     <div id="control-panel">
-        <div id="status" class="status-badge offline">Checking Connection...</div>
-        <div><strong>Last Seen:</strong> <span id="time">Loading...</span></div>
+        <div id="status" class="status-badge offline">Checking...</div>
+        <div class="time-row"><strong>Letztes GPS-Update:</strong><br><span id="time">Loading...</span></div>
+        <div class="time-row"><strong>Letzter Herzschlag-Ping:</strong><br><span id="ping-time">Loading...</span></div>
         
         <label for="time-filter"><strong>History Range:</strong></label>
         <select id="time-filter" onchange="filterAndRender()">
@@ -85,7 +90,9 @@
                 expectedIntervalMs = envelope.interval_ms || 300000;
                 const lastPingTime = envelope.last_ping || Date.now();
                 
-                // Explicit initialization parameters for CryptoJS compatibility
+                // Display the readable local time for the raw background ping
+                document.getElementById('ping-time').innerText = new Date(lastPingTime).toLocaleTimeString();
+                
                 const key = CryptoJS.SHA256(password);
                 const iv = CryptoJS.enc.Utf8.parse('0123456789abcdef');
                 
@@ -102,22 +109,35 @@
                 const decryptedText = decrypted.toString(CryptoJS.enc.Utf8);
                 rawTrackingHistory = JSON.parse(decryptedText);
 
-                // Online/Offline status badge generation logic
+                // --- NEW STATUS BADGE LOGIC ENGINE ---
                 const statusBadge = document.getElementById('status');
                 const now = Date.now();
+                
+                const latestPoint = rawTrackingHistory[rawTrackingHistory.length - 1];
+
+                // 1. Check if the script has stopped completely (No ping received for over 2 cycles)
                 if ((now - lastPingTime) > (expectedIntervalMs * 2)) {
                     statusBadge.innerText = "OFFLINE";
                     statusBadge.className = "status-badge offline";
-                } else {
+                } 
+                // 2. Check if a ping arrived, but the location timestamp wasn't updated (Stationary)
+                // We add a tiny 2-second (2000ms) buffer for hardware calculation alignment
+                else if (lastPingTime > (latestPoint.timestamp + 2000)) {
+                    statusBadge.innerText = "KEINE BEWEGUNG";
+                    statusBadge.className = "status-badge stationary";
+                } 
+                // 3. The ping and location match up perfectly (Active tracking)
+                else {
                     statusBadge.innerText = "ONLINE";
                     statusBadge.className = "status-badge online";
                 }
+                // -------------------------------------
 
                 filterAndRender();
             } catch (error) {
                 console.error("Decryption pipeline error:", error);
                 document.getElementById('time').innerText = "Auth Configuration Error";
-                localStorage.removeItem('map_password'); // Drop cached pass to prompt fresh next loop
+                localStorage.removeItem('map_password'); 
             }
         }
 
@@ -141,7 +161,6 @@
             const latestPoint = rawTrackingHistory[rawTrackingHistory.length - 1];
             document.getElementById('time').innerText = latestPoint.time;
 
-            // Render path architecture and fading points
             for (let i = 0; i < filteredPoints.length; i++) {
                 const current = filteredPoints[i];
                 const isLatest = (current.timestamp === latestPoint.timestamp);
@@ -151,7 +170,7 @@
                      .addTo(markerGroup)
                      .bindPopup(`<b>Current Location</b><br>${current.time}`);
                 } else {
-                    const ageRatio = i / filteredPoints.length; // Linear scaling configuration for tracking fade
+                    const ageRatio = i / filteredPoints.length; 
                     L.circleMarker([current.lat, current.lng], {
                         radius: 5 + (ageRatio * 3),
                         color: '#9b59b6',
@@ -163,13 +182,10 @@
 
                 if (i > 0) {
                     const previous = filteredPoints[i - 1];
-                    
-                    // Velocity calculation heuristics to isolate walking paths vs vehicle use
                     const distanceMeters = map.distance([previous.lat, previous.lng], [current.lat, current.lng]);
                     const timeSeconds = (current.timestamp - previous.timestamp) / 1000;
                     const speedKmh = timeSeconds > 0 ? (distanceMeters / timeSeconds) * 3.6 : 0;
 
-                    // Configuration: If moving faster than 15 km/h, classify pathing as driving
                     const isDriving = (speedKmh > 15 || current.speed * 3.6 > 15);
                     const lineTrackColor = isDriving ? '#e67e22' : '#2bc0d8'; 
                     const lineWeight = isDriving ? 4 : 2;
@@ -178,17 +194,16 @@
                         color: lineTrackColor,
                         weight: lineWeight,
                         opacity: 0.3 + ((i / filteredPoints.length) * 0.6),
-                        dashArray: isDriving ? '1, 6' : 'none'  // Dotted lines identify vehicular travel segments
+                        dashArray: isDriving ? '1, 6' : 'none' 
                     }).addTo(pathGroup);
                 }
             }
 
-            // Reposition viewport frame onto center focus coordinate target
             map.setView([latestPoint.lat, latestPoint.lng], 14);
         }
 
         fetchData();
-        setInterval(fetchData, 30000); // Check GitHub Pages for new data segments every 30 seconds
+        setInterval(fetchData, 30000); 
     </script>
 </body>
 </html>
