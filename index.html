@@ -159,7 +159,15 @@
             if (filteredPoints.length === 0) return;
 
             const latestPoint = rawTrackingHistory[rawTrackingHistory.length - 1];
-            document.getElementById('time').innerText = latestPoint.time;
+            // Dynamically construct a 24-hour YYYY-MM-DD HH:MM string from the millisecond timestamp
+            const gpsDate = new Date(latestPoint.timestamp);
+            const yyyy = gpsDate.getFullYear();
+            const mm = String(gpsDate.getMonth() + 1).padStart(2, '0');
+            const dd = String(gpsDate.getDate()).padStart(2, '0');
+            const hh = String(gpsDate.getHours()).padStart(2, '0');
+            const min = String(gpsDate.getMinutes()).padStart(2, '0');
+            
+            document.getElementById('time').innerText = `${yyyy}-${mm}-${dd} ${hh}:${min}`;
 
             for (let i = 0; i < filteredPoints.length; i++) {
                 const current = filteredPoints[i];
