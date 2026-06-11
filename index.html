@@ -3,27 +3,57 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Secure Tracker</title>
+    <title>Advanced Secure Path Tracker</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
         html, body, #map { height: 100%; margin: 0; padding: 0; }
-        #info-box {
+        
+        /* Control Panel Styles */
+        #control-panel {
             position: absolute; top: 10px; left: 50px; z-index: 1000;
-            background: white; padding: 10px; border-radius: 5px;
-            font-family: Arial, sans-serif; box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            background: white; padding: 15px; border-radius: 8px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.2); max-width: 280px;
+        }
+        .status-badge {
+            display: inline-block; padding: 3px 8px; border-radius: 12px;
+            font-size: 12px; font-weight: bold; color: white; margin-bottom: 8px;
+        }
+        .online { background: #2ecc71; }
+        .offline { background: #e74c3c; }
+        select {
+            width: 100%; padding: 5px; margin-top: 8px;
+            border-radius: 4px; border: 1px solid #ccc;
+        }
+        
+        /* Custom Heart Marker Style */
+        .heart-icon {
+            font-size: 32px; text-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            text-align: center; line-height: 1;
         }
     </style>
 </head>
 <body>
 
-    <div id="info-box">Last updated: <span id="time">Loading...</span></div>
+    <div id="control-panel">
+        <div id="status" class="status-badge offline">Checking...</div>
+        <div><strong>Last Seen:</strong> <span id="time">Loading...</span></div>
+        
+        <label for="time-filter"><strong>History Range:</strong></label>
+        <select id="time-filter" onchange="filterAndRender()">
+            <option value="all">Whole Trip</option>
+            <option value="1">Today Only</option>
+            <option value="3">Last 3 Days</option>
+            <option value="7">Last Week</option>
+        </select>
+    </div>
+
     <div id="map"></div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
     
     <script>
-        // Check if we already have the password saved locally, if not, ask for it
         let password = localStorage.getItem('map_password');
         if (!password) {
             password = prompt("Enter the decryption password:");
@@ -32,48 +62,132 @@
 
         const map = L.map('map').setView([0, 0], 2);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap contributors'
+            attribution: '© OpenStreetMap'
         }).addTo(map);
 
-        let marker = null;
+        // Core data holders
+        let rawTrackingHistory = [];
+        let expectedIntervalMs = 300000; 
+        
+        // Leaflet layer groups to easily clear/redraw paths
+        const markerGroup = L.layerGroup().addTo(map);
+        const pathGroup = L.layerGroup().addTo(map);
 
-        async function updateMap() {
+        // Custom Heart Icon Definition
+        const heartIcon = L.divIcon({
+            html: '❤️',
+            className: 'heart-icon',
+            iconSize: [32, 32],
+            iconAnchor: [16, 32]
+        });
+
+        async function fetchData() {
             try {
                 const response = await fetch('./location.json?t=' + new Date().getTime());
                 const envelope = await response.json();
-                const encryptedText = envelope.encrypted;
-
-                // Derive key and IV exactly like the Python script
+                
+                expectedIntervalMs = envelope.interval_ms || 300000;
+                
                 const key = CryptoJS.SHA256(password);
                 const iv = CryptoJS.enc.Utf8.parse('0123456789abcdef');
-
-                // Decrypt
-                const decrypted = CryptoJS.AES.decrypt(encryptedText, key, { iv: iv });
+                const decrypted = CryptoJS.AES.decrypt(envelope.encrypted, key, { iv: iv });
                 const decryptedText = decrypted.toString(CryptoJS.enc.Utf8);
                 
-                // Parse the inner JSON
-                const data = JSON.parse(decryptedText);
-                
-                const lat = data.lat;
-                const lng = data.lng;
-                document.getElementById('time').innerText = data.time;
-
-                if (!marker) {
-                    marker = L.marker([lat, lng]).addTo(map);
-                    map.setView([lat, lng], 15);
-                } else {
-                    marker.setLatLng([lat, lng]);
-                }
+                rawTrackingHistory = JSON.parse(decryptedText);
+                filterAndRender();
             } catch (error) {
-                console.error("Decryption failed. Wrong password?");
-                // Clear saved password if it fails so they can try again on refresh
+                console.error("Pipeline failure:", error);
+                document.getElementById('time').innerText = "Auth/Decryption Error";
                 localStorage.removeItem('map_password');
-                document.getElementById('time').innerText = "Decryption Error (Wrong Password)";
             }
         }
 
-        updateMap();
-        setInterval(updateMap, 30000);
+        function filterAndRender() {
+            if (rawTrackingHistory.length === 0) return;
+
+            // Clear map layers before repainting
+            markerGroup.clearLayers();
+            pathGroup.clearLayers();
+
+            const filterValue = document.getElementById('time-filter').value;
+            const now = Date.now();
+            
+            // Filter historical array
+            let filteredPoints = rawTrackingHistory.filter(point => {
+                if (filterValue === 'all') return true;
+                const daysLimitMs = parseInt(filterValue) * 24 * 60 * 60 * 1000;
+                return (now - point.timestamp) <= daysLimitMs;
+            });
+
+            if (filteredPoints.length === 0) return;
+
+            // 1. Process Status Badges & Core Info Boxes using the LATEST point
+            const latestPoint = rawTrackingHistory[rawTrackingHistory.length - 1];
+            document.getElementById('time').innerText = latestPoint.time;
+            
+            const statusBadge = document.getElementById('status');
+            // If the elapsed time since last check is greater than double the script interval, mark offline
+            if ((now - latestPoint.timestamp) > (expectedIntervalMs * 2)) {
+                statusBadge.innerText = "OFFLINE";
+                statusBadge.className = "status-badge offline";
+            } else {
+                statusBadge.innerText = "ONLINE";
+                statusBadge.className = "status-badge online";
+            }
+
+            // 2. Plot past historical paths and fading markers
+            for (let i = 0; i < filteredPoints.length; i++) {
+                const current = filteredPoints[i];
+                const isLatest = (current.timestamp === latestPoint.timestamp);
+
+                if (isLatest) {
+                    // Current location gets the prominent Heart Marker
+                    L.marker([current.lat, current.lng], { icon: heartIcon })
+                     .addTo(markerGroup)
+                     .bindPopup(`<b>Current Location</b><br>${current.time}`);
+                } else {
+                    // Historical points get smaller fading circles based on chronological distance
+                    const ageIndex = i / filteredPoints.length; // Decaying opacity fraction
+                    L.circleMarker([current.lat, current.lng], {
+                        radius: 5 + (ageIndex * 3),
+                        color: '#9b59b6',
+                        fillColor: '#9b59b6',
+                        fillOpacity: 0.1 + (ageIndex * 0.6),
+                        opacity: 0.2 + (ageIndex * 0.6)
+                    }).addTo(markerGroup).bindPopup(`Passed here:<br>${current.time}`);
+                }
+
+                // Draw path vectors between connection lines
+                if (i > 0) {
+                    const previous = filteredPoints[i - 1];
+                    
+                    // Simple heuristic velocity assessment:
+                    // Calculate speed change. If data doesn't supply hardware speed, infer via displacement over time.
+                    const distanceMeters = map.distance([previous.lat, previous.lng], [current.lat, current.lng]);
+                    const timeSeconds = (current.timestamp - previous.timestamp) / 1000;
+                    const speedKmh = timeSeconds > 0 ? (distanceMeters / timeSeconds) * 3.6 : 0;
+
+                    // Color code path: Fast (Vehicular) vs Slow (Footpath tracking)
+                    // If moving faster than 15 km/h, classify as vehicular pathing
+                    const lineTrackColor = (speedKmh > 15 || current.speed * 3.6 > 15) ? '#e67e22' : '#2bc0d8'; 
+                    const lineWeight = (speedKmh > 15 || current.speed * 3.6 > 15) ? 4 : 2;
+
+                    L.polyline([[previous.lat, previous.lng], [current.lat, current.lng]], {
+                        color: lineTrackColor,
+                        weight: lineWeight,
+                        opacity: 0.4 + ((i / filteredPoints.length) * 0.5),
+                        dashArray: speedKmh > 15 ? '1, 5' : 'none' // Dotted line for driving, solid for walking
+                    }).addTo(pathGroup);
+                }
+            }
+
+            // Pan map frame to focus on current position
+            map.setView([latestPoint.lat, latestPoint.lng], 14);
+        }
+
+        // Initialize execution loops
+        fetchData();
+        setInterval(fetchData, 30000); // Check for new updates pushed to GitHub every 30 seconds
     </script>
 </body>
 </html>
