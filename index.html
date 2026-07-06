@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Secure Path Mapping Dashboard</title>
+    <title>Real-Time Secure Tracking Dashboard</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
         html, body, #map { height: 100%; margin: 0; padding: 0; }
@@ -20,7 +20,7 @@
             text-transform: uppercase;
         }
         .online { background: #2ecc71; }
-        .stationary { background: #3498db; } /* Nice blue color for idling */
+        .stationary { background: #3498db; }
         .offline { background: #e74c3c; }
         
         .time-row { margin-bottom: 6px; font-size: 13px; color: #333; }
@@ -39,16 +39,16 @@
 <body>
 
     <div id="control-panel">
-        <div id="status" class="status-badge offline">Checking...</div>
+        <div id="status" class="status-badge offline">Connecting...</div>
         <div class="time-row"><strong>Letztes GPS-Update:</strong><br><span id="time">Loading...</span></div>
         <div class="time-row"><strong>Letzter Herzschlag-Ping:</strong><br><span id="ping-time">Loading...</span></div>
         
-        <label for="time-filter"><strong>Anzeige:</strong></label>
+        <label for="time-filter"><strong>History Range:</strong></label>
         <select id="time-filter" onchange="filterAndRender()">
-            <option value="all">Alles</option>
-            <option value="1">Heute</option>
-            <option value="3">Letzte 3 Tage</option>
-            <option value="7">Letzte Woche</option>
+            <option value="all">Whole Trip</option>
+            <option value="1">Today Only</option>
+            <option value="3">Last 3 Days</option>
+            <option value="7">Last Week</option>
         </select>
     </div>
 
@@ -57,7 +57,20 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
     
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+
     <script>
+        // ==================== CONFIGURATION ====================
+        const firebaseConfig = {
+            databaseURL: "https://wo-ischer-default-rtdb.europe-west1.firebasedatabase.app/"
+        };
+        // =======================================================
+
+        // Initialize Firebase database architecture
+        firebase.initializeApp(firebaseConfig);
+        const databaseReference = firebase.database().ref('/tracker');
+
         let password = localStorage.getItem('map_password');
         if (!password) {
             password = prompt("Enter the decryption password:");
@@ -82,17 +95,24 @@
             iconAnchor: [16, 32]
         });
 
-        async function fetchData() {
+        // The Firebase WebSocket live data listener event stream
+        databaseReference.on('value', (snapshot) => {
+            const envelope = snapshot.val();
+            if (!envelope) {
+                console.log("Database is currently empty.");
+                document.getElementById('time').innerText = "No data payload found.";
+                return;
+            }
+            
             try {
-                const response = await fetch('https://raw.githubusercontent.com/Tobias-Sidler/wo-bini/main/location.json?t=' + new Date().getTime());
-                const envelope = await response.json();
-                
                 expectedIntervalMs = envelope.interval_ms || 300000;
                 const lastPingTime = envelope.last_ping || Date.now();
                 
-                // Display the readable local time for the raw background ping
-                document.getElementById('ping-time').innerText = new Date(lastPingTime).toLocaleTimeString();
+                // Print 24h formatted local time for the pure runtime ping link
+                const pingDate = new Date(lastPingTime);
+                document.getElementById('ping-time').innerText = format24h(pingDate);
                 
+                // AES Decryption Pipeline
                 const key = CryptoJS.SHA256(password);
                 const iv = CryptoJS.enc.Utf8.parse('0123456789abcdef');
                 
@@ -109,36 +129,37 @@
                 const decryptedText = decrypted.toString(CryptoJS.enc.Utf8);
                 rawTrackingHistory = JSON.parse(decryptedText);
 
-                // --- NEW STATUS BADGE LOGIC ENGINE ---
+                // Live status flag analyzer rules
                 const statusBadge = document.getElementById('status');
                 const now = Date.now();
-                
                 const latestPoint = rawTrackingHistory[rawTrackingHistory.length - 1];
 
-                // 1. Check if the script has stopped completely (No ping received for over 2 cycles)
                 if ((now - lastPingTime) > (expectedIntervalMs * 2)) {
                     statusBadge.innerText = "OFFLINE";
                     statusBadge.className = "status-badge offline";
-                } 
-                // 2. Check if a ping arrived, but the location timestamp wasn't updated (Stationary)
-                // We add a tiny 2-second (2000ms) buffer for hardware calculation alignment
-                else if (lastPingTime > (latestPoint.timestamp + 2000)) {
+                } else if (lastPingTime > (latestPoint.timestamp + 2000)) {
                     statusBadge.innerText = "KEINE BEWEGUNG";
                     statusBadge.className = "status-badge stationary";
-                } 
-                // 3. The ping and location match up perfectly (Active tracking)
-                else {
+                } else {
                     statusBadge.innerText = "ONLINE";
                     statusBadge.className = "status-badge online";
                 }
-                // -------------------------------------
 
                 filterAndRender();
             } catch (error) {
-                console.error("Decryption pipeline error:", error);
+                console.error("Decryption layout fault:", error);
                 document.getElementById('time').innerText = "Auth Configuration Error";
                 localStorage.removeItem('map_password'); 
             }
+        });
+
+        function format24h(dateObj) {
+            const yyyy = dateObj.getFullYear();
+            const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
+            const dd = String(dateObj.getDate()).padStart(2, '0');
+            const hh = String(dateObj.getHours()).padStart(2, '0');
+            const min = String(dateObj.getMinutes()).padStart(2, '0');
+            return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
         }
 
         function filterAndRender() {
@@ -159,15 +180,7 @@
             if (filteredPoints.length === 0) return;
 
             const latestPoint = rawTrackingHistory[rawTrackingHistory.length - 1];
-            // Dynamically construct a 24-hour YYYY-MM-DD HH:MM string from the millisecond timestamp
-            const gpsDate = new Date(latestPoint.timestamp);
-            const yyyy = gpsDate.getFullYear();
-            const mm = String(gpsDate.getMonth() + 1).padStart(2, '0');
-            const dd = String(gpsDate.getDate()).padStart(2, '0');
-            const hh = String(gpsDate.getHours()).padStart(2, '0');
-            const min = String(gpsDate.getMinutes()).padStart(2, '0');
-            
-            document.getElementById('time').innerText = `${yyyy}-${mm}-${dd} ${hh}:${min}`;
+            document.getElementById('time').innerText = format24h(new Date(latestPoint.timestamp));
 
             for (let i = 0; i < filteredPoints.length; i++) {
                 const current = filteredPoints[i];
@@ -176,7 +189,7 @@
                 if (isLatest) {
                     L.marker([current.lat, current.lng], { icon: heartIcon })
                      .addTo(markerGroup)
-                     .bindPopup(`<b>Current Location</b><br>${current.time}`);
+                     .bindPopup(`<b>Current Location</b><br>${format24h(new Date(current.timestamp))}`);
                 } else {
                     const ageRatio = i / filteredPoints.length; 
                     L.circleMarker([current.lat, current.lng], {
@@ -185,7 +198,7 @@
                         fillColor: '#9b59b6',
                         fillOpacity: 0.1 + (ageRatio * 0.6),
                         opacity: 0.2 + (ageRatio * 0.6)
-                    }).addTo(markerGroup).bindPopup(`History Coordinate Point:<br>${current.time}`);
+                    }).addTo(markerGroup).bindPopup(`History coordinate item:<br>${format24h(new Date(current.timestamp))}`);
                 }
 
                 if (i > 0) {
@@ -209,9 +222,6 @@
 
             map.setView([latestPoint.lat, latestPoint.lng], 14);
         }
-
-        fetchData();
-        setInterval(fetchData, 30000); 
     </script>
 </body>
 </html>
