@@ -42,6 +42,7 @@
         <div id="status" class="status-badge offline">Connecting...</div>
         <div class="time-row"><strong>Letztes GPS-Update:</strong><br><span id="time">Loading...</span></div>
         <div class="time-row"><strong>Letzter Herzschlag-Ping:</strong><br><span id="ping-time">Loading...</span></div>
+        <div class="time-row"><strong>Telefon-Batterie:</strong><br><span id="battery">Loading...</span></div>
         
         <label for="time-filter"><strong>History Range:</strong></label>
         <select id="time-filter" onchange="filterAndRender()">
@@ -56,18 +57,16 @@
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
-    
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 
     <script>
         // ==================== CONFIGURATION ====================
         const firebaseConfig = {
-            databaseURL: "https://wo-ischer-default-rtdb.europe-west1.firebasedatabase.app/"
+            databaseURL: "https://YOUR-PROJECT-NAME-default-rtdb.firebasedatabase.app/"
         };
         // =======================================================
 
-        // Initialize Firebase database architecture
         firebase.initializeApp(firebaseConfig);
         const databaseReference = firebase.database().ref('/tracker');
 
@@ -95,24 +94,27 @@
             iconAnchor: [16, 32]
         });
 
-        // The Firebase WebSocket live data listener event stream
         databaseReference.on('value', (snapshot) => {
             const envelope = snapshot.val();
-            if (!envelope) {
-                console.log("Database is currently empty.");
-                document.getElementById('time').innerText = "No data payload found.";
-                return;
-            }
+            if (!envelope) return;
             
             try {
                 expectedIntervalMs = envelope.interval_ms || 300000;
                 const lastPingTime = envelope.last_ping || Date.now();
                 
-                // Print 24h formatted local time for the pure runtime ping link
-                const pingDate = new Date(lastPingTime);
-                document.getElementById('ping-time').innerText = format24h(pingDate);
+                // Display formatted local 24h clock for incoming system ping metrics
+                document.getElementById('ping-time').innerText = format24h(new Date(lastPingTime));
                 
-                // AES Decryption Pipeline
+                // Unpack and render battery telemetry payloads
+                if (envelope.battery_level !== undefined) {
+                    const bLevel = envelope.battery_level;
+                    const bStatus = envelope.battery_status === "Charging" ? "⚡ Lädt" : "🔋 Akkubetrieb";
+                    document.getElementById('battery').innerText = `${bLevel}% (${bStatus})`;
+                } else {
+                    document.getElementById('battery').innerText = "Keine Daten";
+                }
+                
+                // Decryption execution pipeline
                 const key = CryptoJS.SHA256(password);
                 const iv = CryptoJS.enc.Utf8.parse('0123456789abcdef');
                 
@@ -129,7 +131,6 @@
                 const decryptedText = decrypted.toString(CryptoJS.enc.Utf8);
                 rawTrackingHistory = JSON.parse(decryptedText);
 
-                // Live status flag analyzer rules
                 const statusBadge = document.getElementById('status');
                 const now = Date.now();
                 const latestPoint = rawTrackingHistory[rawTrackingHistory.length - 1];
@@ -147,7 +148,7 @@
 
                 filterAndRender();
             } catch (error) {
-                console.error("Decryption layout fault:", error);
+                console.error("Decryption component breakdown:", error);
                 document.getElementById('time').innerText = "Auth Configuration Error";
                 localStorage.removeItem('map_password'); 
             }
