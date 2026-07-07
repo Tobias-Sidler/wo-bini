@@ -1,56 +1,104 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="de">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Real-Time Secure Tracking Dashboard</title>
+    <title>Tobis Abenteuer-Karte ❤️</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
         html, body, #map { height: 100%; margin: 0; padding: 0; }
         
         #control-panel {
-            position: absolute; top: 10px; left: 50px; z-index: 1000;
-            background: white; padding: 15px; border-radius: 8px;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.2); width: 260px;
+            position: absolute; top: 15px; left: 15px; z-index: 1000;
+            background: rgba(255, 255, 255, 0.95); padding: 18px; border-radius: 12px;
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.15); width: 280px;
+            backdrop-filter: blur(5px);
         }
+        
         .status-badge {
-            display: inline-block; padding: 4px 10px; border-radius: 12px;
-            font-size: 12px; font-weight: bold; color: white; margin-bottom: 10px;
-            text-transform: uppercase;
+            display: inline-block; padding: 5px 12px; border-radius: 20px;
+            font-size: 11px; font-weight: bold; color: white; margin-bottom: 12px;
+            text-transform: uppercase; letter-spacing: 0.5px;
         }
-        .online { background: #2ecc71; }
+        .online { background: #2ecc71; box-shadow: 0 0 8px rgba(46, 204, 113, 0.5); }
         .stationary { background: #3498db; }
         .offline { background: #e74c3c; }
         
-        .time-row { margin-bottom: 6px; font-size: 13px; color: #333; }
+        .time-row { margin-bottom: 8px; font-size: 13px; color: #2c3e50; line-height: 1.4; }
+        .time-row strong { color: #34495e; }
         
-        select {
-            width: 100%; padding: 6px; margin-top: 10px;
-            border-radius: 4px; border: 1px solid #ccc; font-size: 13px;
+        .toggle-container {
+            margin-top: 12px; padding-top: 12px; border-top: 1px solid #eee;
+            display: flex; align-items: center; justify-content: space-between;
+            font-size: 13px; font-weight: bold; color: #2c3e50;
         }
         
-        .heart-icon {
-            font-size: 32px; text-shadow: 0 2px 5px rgba(0,0,0,0.3);
-            text-align: center; line-height: 1;
+        .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .3s; border-radius: 24px; }
+        .slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 4px; bottom: 4px; background-color: white; transition: .3s; border-radius: 50%; }
+        input:checked + .slider { background-color: #e74c3c; }
+        input:checked + .slider:before { transform: translateX(20px); }
+
+        select {
+            width: 100%; padding: 8px; margin-top: 8px;
+            border-radius: 6px; border: 1px solid #ccc; font-size: 13px;
+            background: white; color: #333; cursor: pointer;
+        }
+
+        #stats-panel {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            z-index: 1000; background: rgba(255, 255, 255, 0.95);
+            padding: 10px 25px; border-radius: 30px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            display: flex; gap: 30px; font-family: sans-serif; text-align: center;
+            backdrop-filter: blur(5px); border: 1px solid rgba(231, 76, 60, 0.2);
+        }
+        .stat-box { display: flex; flex-direction: column; }
+        .stat-val { font-size: 18px; font-weight: bold; color: #e74c3c; }
+        .stat-lbl { font-size: 11px; color: #7f8c8d; text-transform: uppercase; margin-top: 2px; }
+
+        .custom-avatar-marker {
+            width: 50px; height: 50px;
+            border-radius: 50%; border: 3px solid #e74c3c;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.3);
+            background-size: cover; background-position: center;
+            animation: pulseGlow 2s infinite alternate;
+        }
+        @keyframes pulseGlow {
+            0% { box-shadow: 0 0 5px rgba(231, 76, 60, 0.5); }
+            100% { box-shadow: 0 0 15px rgba(231, 76, 60, 0.9), 0 0 4px #e74c3c; }
         }
     </style>
 </head>
 <body>
 
     <div id="control-panel">
-        <div id="status" class="status-badge offline">Connecting...</div>
-        <div class="time-row"><strong>Letztes GPS-Update:</strong><br><span id="time">Loading...</span></div>
-        <div class="time-row"><strong>Letzter Herzschlag-Ping:</strong><br><span id="ping-time">Loading...</span></div>
-        <div class="time-row"><strong>Telefon-Batterie:</strong><br><span id="battery">Loading...</span></div>
+        <div id="status" class="status-badge offline">Verbinden...</div>
+        <div class="time-row"><strong>Letzte Position:</strong> <span id="relative-time">Warten...</span><br><small style="color:#7f8c8d" id="exact-time"></small></div>
+        <div class="time-row"><strong>Letzter Cloud-Ping:</strong> <span id="relative-ping">Warten...</span></div>
+        <div class="time-row"><strong>Telefon-Batterie:</strong> <span id="battery">Lädt...</span></div>
         
-        <label for="time-filter"><strong>History Range:</strong></label>
-        <select id="time-filter" onchange="filterAndRender()">
-            <option value="all">Whole Trip</option>
-            <option value="1">Today Only</option>
-            <option value="3">Last 3 Days</option>
-            <option value="7">Last Week</option>
+        <div class="toggle-container">
+            <span>Automatisch folgen</span>
+            <label class="switch">
+                <input type="checkbox" id="auto-follow" checked>
+                <span class="slider"></span>
+            </label>
+        </div>
+
+        <label for="view-mode" style="font-size: 12px; margin-top: 10px; display: block; color: #7f8c8d;"><strong>Ansichtsmodus:</strong></label>
+        <select id="view-mode" onchange="filterAndRender()">
+            <option value="live">Live Ansicht (Verblassend)</option>
+            <option value="whole">Ganze Route (Gleichbleibend)</option>
         </select>
+    </div>
+
+    <div id="stats-panel">
+        <div class="stat-box"><span class="stat-val" id="stat-dist">0.0 km</span><span class="stat-lbl">Strecke</span></div>
+        <div class="stat-box"><span class="stat-val" id="stat-speed">0.0 km/h</span><span class="stat-lbl">Tempo</span></div>
+        <div class="stat-box"><span class="stat-val" id="stat-start">--:--</span><span class="stat-lbl">Startzeit</span></div>
     </div>
 
     <div id="map"></div>
@@ -61,20 +109,43 @@
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 
     <script>
+        L.Marker.prototype.slideTo = function (latlng, options) {
+            options = options || {};
+            this._duration = options.duration || 1000;
+            this._startLatLng = this.getLatLng();
+            this._targetLatLng = L.latLng(latlng);
+            this._startTime = performance.now();
+            
+            const animate = (time) => {
+                let progress = (time - this._startTime) / this._duration;
+                if (progress > 1) progress = 1;
+                let lat = this._startLatLng.lat + (this._targetLatLng.lat - this._startLatLng.lat) * progress;
+                let lng = this._startLatLng.lng + (this._targetLatLng.lng - this._startLatLng.lng) * progress;
+                this.setLatLng([lat, lng]);
+                if (progress < 1) this._animationFrame = requestAnimationFrame(animate);
+            };
+            cancelAnimationFrame(this._animationFrame);
+            this._animationFrame = requestAnimationFrame(animate);
+        };
+
         // ==================== CONFIGURATION ====================
         const firebaseConfig = {
             databaseURL: "https://wo-ischer-default-rtdb.europe-west1.firebasedatabase.app/"
         };
+        const USER_IMAGE_URL = 'https://cdn-icons-png.flaticon.com/512/4333/4333609.png'; 
         // =======================================================
+
+        // SECURE PASSWORD LOGIC: Asks once, locks into browser session memory
+        let password = localStorage.getItem('map_password');
+        if (!password) {
+            password = prompt("Bitte gib das Entschlüsselungs-Passwort ein:");
+            if (password) {
+                localStorage.setItem('map_password', password);
+            }
+        }
 
         firebase.initializeApp(firebaseConfig);
         const databaseReference = firebase.database().ref('/tracker');
-
-        let password = localStorage.getItem('map_password');
-        if (!password) {
-            password = prompt("Enter the decryption password:");
-            localStorage.setItem('map_password', password);
-        }
 
         const map = L.map('map').setView([0, 0], 2);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -82,146 +153,167 @@
         }).addTo(map);
 
         let rawTrackingHistory = [];
-        let expectedIntervalMs = 300000; 
+        let expectedIntervalMs = 180000;
+        let lastPingTimestamp = Date.now();
+        let lastGpsTimestamp = Date.now();
         
-        const markerGroup = L.layerGroup().addTo(map);
         const pathGroup = L.layerGroup().addTo(map);
-
-        const heartIcon = L.divIcon({
-            html: '❤️',
-            className: 'heart-icon',
-            iconSize: [32, 32],
-            iconAnchor: [16, 32]
-        });
+        let liveGlidingMarker = null;
 
         databaseReference.on('value', (snapshot) => {
             const envelope = snapshot.val();
             if (!envelope) return;
             
             try {
-                expectedIntervalMs = envelope.interval_ms || 300000;
-                const lastPingTime = envelope.last_ping || Date.now();
+                expectedIntervalMs = envelope.interval_ms || 180000;
+                lastPingTimestamp = envelope.last_ping || Date.now();
                 
-                // Display formatted local 24h clock for incoming system ping metrics
-                document.getElementById('ping-time').innerText = format24h(new Date(lastPingTime));
-                
-                // Unpack and render battery telemetry payloads
                 if (envelope.battery_level !== undefined) {
                     const bLevel = envelope.battery_level;
                     const bStatus = envelope.battery_status === "Charging" ? "⚡ Lädt" : "🔋 Akkubetrieb";
                     document.getElementById('battery').innerText = `${bLevel}% (${bStatus})`;
-                } else {
-                    document.getElementById('battery').innerText = "Keine Daten";
                 }
-                
-                // Decryption execution pipeline
+
                 const key = CryptoJS.SHA256(password);
                 const iv = CryptoJS.enc.Utf8.parse('0123456789abcdef');
+                const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: CryptoJS.enc.Base64.parse(envelope.encrypted) });
+                const decrypted = CryptoJS.AES.decrypt(cipherParams, key, { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
                 
-                const cipherParams = CryptoJS.lib.CipherParams.create({
-                    ciphertext: CryptoJS.enc.Base64.parse(envelope.encrypted)
-                });
+                rawTrackingHistory = JSON.parse(decrypted.toString(CryptoJS.enc.Utf8));
+                if (rawTrackingHistory.length === 0) return;
 
-                const decrypted = CryptoJS.AES.decrypt(cipherParams, key, { 
-                    iv: iv, 
-                    mode: CryptoJS.mode.CBC, 
-                    padding: CryptoJS.pad.Pkcs7 
-                });
+                const latestPoint = rawTrackingHistory[rawTrackingHistory.length - 1];
+                lastGpsTimestamp = latestPoint.timestamp;
+                document.getElementById('exact-time').innerText = `(${format24h(new Date(lastGpsTimestamp))})`;
+
+                updateAdventureStats();
                 
-                const decryptedText = decrypted.toString(CryptoJS.enc.Utf8);
-                rawTrackingHistory = JSON.parse(decryptedText);
-
                 const statusBadge = document.getElementById('status');
                 const now = Date.now();
-                const latestPoint = rawTrackingHistory[rawTrackingHistory.length - 1];
-
-                if ((now - lastPingTime) > (expectedIntervalMs * 2)) {
+                if ((now - lastPingTimestamp) > (180000 * 2.5)) {
                     statusBadge.innerText = "OFFLINE";
                     statusBadge.className = "status-badge offline";
-                } else if (lastPingTime > (latestPoint.timestamp + 2000)) {
-                    statusBadge.innerText = "KEINE BEWEGUNG";
+                } else if (lastPingTimestamp > (lastGpsTimestamp + 10000)) {
+                    statusBadge.innerText = "PAUSE";
                     statusBadge.className = "status-badge stationary";
                 } else {
-                    statusBadge.innerText = "ONLINE";
+                    statusBadge.innerText = "IN BEWEGUNG";
                     statusBadge.className = "status-badge online";
                 }
 
                 filterAndRender();
+                updateTimeCounters();
             } catch (error) {
-                console.error("Decryption component breakdown:", error);
-                document.getElementById('time').innerText = "Auth Configuration Error";
-                localStorage.removeItem('map_password'); 
+                console.error("Decrypt error:", error);
+                document.getElementById('status').innerText = "Falsches Passwort!";
+                localStorage.removeItem('map_password'); // Wipe bad memory to re-prompt
             }
         });
 
         function format24h(dateObj) {
-            const yyyy = dateObj.getFullYear();
-            const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
-            const dd = String(dateObj.getDate()).padStart(2, '0');
-            const hh = String(dateObj.getHours()).padStart(2, '0');
-            const min = String(dateObj.getMinutes()).padStart(2, '0');
-            return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
+            return `${String(dateObj.getHours()).padStart(2, '0')}:${String(dateObj.getMinutes()).padStart(2, '0')}`;
+        }
+
+        function formatTimeAgo(timestamp) {
+            const diffSeconds = Math.floor((Date.now() - timestamp) / 1000);
+            if (diffSeconds < 5) return "Gerade eben";
+            if (diffSeconds < 60) return `vor ${diffSeconds} Sek.`;
+            const diffMinutes = Math.floor(diffSeconds / 60);
+            if (diffMinutes < 60) return `vor ${diffMinutes} Min.`;
+            return `vor ${Math.floor(diffMinutes / 60)} Std.`;
+        }
+
+        function updateTimeCounters() {
+            if (rawTrackingHistory.length === 0) return;
+            document.getElementById('relative-time').innerText = formatTimeAgo(lastGpsTimestamp);
+            document.getElementById('relative-ping').innerText = formatTimeAgo(lastPingTimestamp);
+        }
+        setInterval(updateTimeCounters, 1000);
+
+        function updateAdventureStats() {
+            if (rawTrackingHistory.length === 0) return;
+            
+            let totalMeters = 0;
+            for (let i = 1; i < rawTrackingHistory.length; i++) {
+                totalMeters += map.distance([rawTrackingHistory[i-1].lat, rawTrackingHistory[i-1].lng], [rawTrackingHistory[i].lat, rawTrackingHistory[i].lng]);
+            }
+            
+            const totalKm = (totalMeters / 1000).toFixed(1);
+            const latest = rawTrackingHistory[rawTrackingHistory.length - 1];
+            const currentSpeedKmh = (latest.speed * 3.6).toFixed(1);
+            const startTimeStr = format24h(new Date(rawTrackingHistory[0].timestamp));
+
+            document.getElementById('stat-dist').innerText = `${totalKm} km`;
+            document.getElementById('stat-speed').innerText = `${currentSpeedKmh} km/h`;
+            document.getElementById('stat-start').innerText = startTimeStr;
         }
 
         function filterAndRender() {
             if (rawTrackingHistory.length === 0) return;
 
-            markerGroup.clearLayers();
             pathGroup.clearLayers();
-
-            const filterValue = document.getElementById('time-filter').value;
-            const now = Date.now();
-            
-            let filteredPoints = rawTrackingHistory.filter(point => {
-                if (filterValue === 'all') return true;
-                const daysLimitMs = parseInt(filterValue) * 24 * 60 * 60 * 1000;
-                return (now - point.timestamp) <= daysLimitMs;
-            });
-
-            if (filteredPoints.length === 0) return;
-
+            const mode = document.getElementById('view-mode').value;
             const latestPoint = rawTrackingHistory[rawTrackingHistory.length - 1];
-            document.getElementById('time').innerText = format24h(new Date(latestPoint.timestamp));
 
-            for (let i = 0; i < filteredPoints.length; i++) {
-                const current = filteredPoints[i];
+            for (let i = 0; i < rawTrackingHistory.length; i++) {
+                const current = rawTrackingHistory[i];
                 const isLatest = (current.timestamp === latestPoint.timestamp);
 
-                if (isLatest) {
-                    L.marker([current.lat, current.lng], { icon: heartIcon })
-                     .addTo(markerGroup)
-                     .bindPopup(`<b>Current Location</b><br>${format24h(new Date(current.timestamp))}`);
-                } else {
-                    const ageRatio = i / filteredPoints.length; 
+                if (!isLatest) {
+                    let pointOpacity = 0.6;
+                    let pointFillOpacity = 0.3;
+                    
+                    if (mode === 'live') {
+                        const ageRatio = i / rawTrackingHistory.length;
+                        pointOpacity = 0.05 + (ageRatio * 0.55);
+                        pointFillOpacity = 0.02 + (ageRatio * 0.28);
+                    }
+
                     L.circleMarker([current.lat, current.lng], {
-                        radius: 5 + (ageRatio * 3),
+                        radius: 4,
                         color: '#9b59b6',
                         fillColor: '#9b59b6',
-                        fillOpacity: 0.1 + (ageRatio * 0.6),
-                        opacity: 0.2 + (ageRatio * 0.6)
-                    }).addTo(markerGroup).bindPopup(`History coordinate item:<br>${format24h(new Date(current.timestamp))}`);
+                        fillOpacity: pointFillOpacity,
+                        opacity: pointOpacity
+                    }).addTo(pathGroup);
                 }
 
                 if (i > 0) {
-                    const previous = filteredPoints[i - 1];
-                    const distanceMeters = map.distance([previous.lat, previous.lng], [current.lat, current.lng]);
-                    const timeSeconds = (current.timestamp - previous.timestamp) / 1000;
-                    const speedKmh = timeSeconds > 0 ? (distanceMeters / timeSeconds) * 3.6 : 0;
-
-                    const isDriving = (speedKmh > 15 || current.speed * 3.6 > 15);
-                    const lineTrackColor = isDriving ? '#e67e22' : '#2bc0d8'; 
-                    const lineWeight = isDriving ? 4 : 2;
+                    const previous = rawTrackingHistory[i - 1];
+                    let lineOpacity = 0.6;
+                    if (mode === 'live') {
+                        lineOpacity = 0.1 + ((i / rawTrackingHistory.length) * 0.5);
+                    }
 
                     L.polyline([[previous.lat, previous.lng], [current.lat, current.lng]], {
-                        color: lineTrackColor,
-                        weight: lineWeight,
-                        opacity: 0.3 + ((i / filteredPoints.length) * 0.6),
-                        dashArray: isDriving ? '1, 6' : 'none' 
+                        color: '#2bc0d8',
+                        weight: 3,
+                        opacity: lineOpacity
                     }).addTo(pathGroup);
                 }
             }
 
-            map.setView([latestPoint.lat, latestPoint.lng], 14);
+            const newTargetLatLng = [latestPoint.lat, latestPoint.lng];
+            
+            if (!liveGlidingMarker) {
+                const avatarIcon = L.divIcon({
+                    className: 'custom-avatar-marker-wrapper',
+                    html: `<div class="custom-avatar-marker" style="background-image: url('${USER_IMAGE_URL}');"></div>`,
+                    iconSize: [50, 50],
+                    iconAnchor: [25, 25]
+                });
+                
+                liveGlidingMarker = L.marker(newTargetLatLng, { icon: avatarIcon }).addTo(map);
+                map.setView(newTargetLatLng, 15);
+            } else {
+                liveGlidingMarker.slideTo(newTargetLatLng, { duration: 2500 });
+            }
+
+            if (document.getElementById('auto-follow').checked) {
+                setTimeout(() => {
+                    map.panTo(newTargetLatLng, { animate: true, duration: 2.0 });
+                }, 300);
+            }
         }
     </script>
 </body>
