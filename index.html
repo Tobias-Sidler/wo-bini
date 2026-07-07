@@ -111,7 +111,7 @@
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 
     <script>
-        // Smooth slide engine integration
+        // Smooth slide marker system
         L.Marker.prototype.slideTo = function (latlng, options) {
             options = options || {};
             this._duration = options.duration || 1000;
@@ -143,7 +143,6 @@
         }
 
         firebase.initializeApp(firebaseConfig);
-        // Note: Connecting to '/points' listener branch node
         const databaseReference = firebase.database().ref('/points');
 
         const map = L.map('map').setView([0, 0], 2);
@@ -167,23 +166,34 @@
                 let consolidatedPoints = [];
                 let ultimateEnvelope = null;
 
-                // Loop through all database slices, decrypt them, and compile them into a master array
+                const cryptoKey = CryptoJS.SHA256(password);
+                const iv = CryptoJS.enc.Utf8.parse('0123456789abcdef');
+
+                // FIX: Access inside dataSlices[key].encrypted instead of dataSlices[key] directly
                 Object.keys(dataSlices).forEach(key => {
                     const envelope = dataSlices[key];
-                    ultimateEnvelope = envelope; // Keep reference to track the newest battery/ping states
-
-                    const cryptoKey = CryptoJS.SHA256(password);
-                    const iv = CryptoJS.enc.Utf8.parse('0123456789abcdef');
-                    const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: CryptoJS.enc.Base64.parse(envelope.encrypted) });
-                    const decrypted = CryptoJS.AES.decrypt(cipherParams, key, { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
+                    if (!envelope || !envelope.encrypted) return;
                     
-                    const pointsSlice = JSON.parse(decrypted.toString(CryptoJS.enc.Utf8));
+                    ultimateEnvelope = envelope; 
+
+                    const cipherParams = CryptoJS.lib.CipherParams.create({ 
+                        ciphertext: CryptoJS.enc.Base64.parse(envelope.encrypted) 
+                    });
+                    
+                    const decrypted = CryptoJS.AES.decrypt(cipherParams, cryptoKey, { 
+                        iv: iv, 
+                        mode: CryptoJS.mode.CBC, 
+                        padding: CryptoJS.pad.Pkcs7 
+                    });
+                    
+                    const decryptedText = decrypted.toString(CryptoJS.enc.Utf8);
+                    const pointsSlice = JSON.parse(decryptedText);
+                    
                     if (Array.isArray(pointsSlice)) {
                         consolidatedPoints = consolidatedPoints.concat(pointsSlice);
                     }
                 });
 
-                // Sort chronological timelines safely
                 consolidatedPoints.sort((a, b) => a.timestamp - b.timestamp);
                 rawTrackingHistory = consolidatedPoints;
 
@@ -220,8 +230,9 @@
                 filterAndRender();
                 updateTimeCounters();
             } catch (error) {
-                console.error("Consolidation decryption loop error:", error);
+                console.error("Decryption component break down:", error);
                 document.getElementById('status').innerText = "Passwort Fehler";
+                localStorage.removeItem('map_password');
             }
         });
 
@@ -311,12 +322,11 @@
                 const oneWeekAgoMs = nowMs - (7 * 24 * 60 * 60 * 1000);
                 filteredPoints = rawTrackingHistory.filter(p => p.timestamp >= oneWeekAgoMs);
             } else {
-                filteredPoints = [...rawTrackingHistory]; // Whole 20 days cumulative journey profile
+                filteredPoints = [...rawTrackingHistory]; 
             }
 
             if (filteredPoints.length === 0) return;
 
-            // Route batching pipeline
             if (mode === 'follow') {
                 const batchSize = 20;
                 for (let i = 0; i < filteredPoints.length; i += batchSize - 1) {
@@ -334,7 +344,6 @@
                 }
             }
 
-            // Dot clusters
             for (let i = 0; i < filteredPoints.length; i++) {
                 const current = filteredPoints[i];
                 let pointOpacity = 0.6;
@@ -355,7 +364,6 @@
                 }).addTo(pathGroup);
             }
 
-            // Glide Avatar Targets
             const latestPoint = filteredPoints[filteredPoints.length - 1];
             const newTargetLatLng = [latestPoint.lat, latestPoint.lng];
             
