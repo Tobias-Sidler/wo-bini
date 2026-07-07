@@ -90,13 +90,15 @@
 
         <label for="view-mode" style="font-size: 12px; margin-top: 10px; display: block; color: #7f8c8d;"><strong>Ansichtsmodus:</strong></label>
         <select id="view-mode" onchange="filterAndRender()">
-            <option value="live">Live Ansicht (Verblassend)</option>
-            <option value="whole">Ganze Route (Gleichbleibend)</option>
+            <option value="follow">Follow (Verblassend, max. 24h)</option>
+            <option value="3days">Letzte 3 Tage</option>
+            <option value="1week">Letzte Woche</option>
+            <option value="whole">Ganzer Trip (Bis zu 20 Tage)</option>
         </select>
     </div>
 
     <div id="stats-panel">
-        <div class="stat-box"><span class="stat-val" id="stat-dist">0.0 km</span><span class="stat-lbl">Strecke</span></div>
+        <div class="stat-box"><span class="stat-val" id="stat-dist">0.0 km</span><span class="stat-lbl">Strecke Heute</span></div>
         <div class="stat-box"><span class="stat-val" id="stat-speed">0.0 km/h</span><span class="stat-lbl">Tempo</span></div>
         <div class="stat-box"><span class="stat-val" id="stat-start">--:--</span><span class="stat-lbl">Startzeit</span></div>
     </div>
@@ -109,6 +111,7 @@
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 
     <script>
+        // Smooth slide engine integration
         L.Marker.prototype.slideTo = function (latlng, options) {
             options = options || {};
             this._duration = options.duration || 1000;
@@ -128,24 +131,20 @@
             this._animationFrame = requestAnimationFrame(animate);
         };
 
-        // ==================== CONFIGURATION ====================
         const firebaseConfig = {
             databaseURL: "https://wo-ischer-default-rtdb.europe-west1.firebasedatabase.app/"
         };
         const USER_IMAGE_URL = 'https://cdn-icons-png.flaticon.com/512/4333/4333609.png'; 
-        // =======================================================
 
-        // SECURE PASSWORD LOGIC: Asks once, locks into browser session memory
         let password = localStorage.getItem('map_password');
         if (!password) {
             password = prompt("Bitte gib das Entschlüsselungs-Passwort ein:");
-            if (password) {
-                localStorage.setItem('map_password', password);
-            }
+            if (password) localStorage.setItem('map_password', password);
         }
 
         firebase.initializeApp(firebaseConfig);
-        const databaseReference = firebase.database().ref('/tracker');
+        // Note: Connecting to '/points' listener branch node
+        const databaseReference = firebase.database().ref('/points');
 
         const map = L.map('map').setView([0, 0], 2);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -161,32 +160,49 @@
         let liveGlidingMarker = null;
 
         databaseReference.on('value', (snapshot) => {
-            const envelope = snapshot.val();
-            if (!envelope) return;
+            const dataSlices = snapshot.val();
+            if (!dataSlices) return;
             
             try {
-                expectedIntervalMs = envelope.interval_ms || 180000;
-                lastPingTimestamp = envelope.last_ping || Date.now();
+                let consolidatedPoints = [];
+                let ultimateEnvelope = null;
+
+                // Loop through all database slices, decrypt them, and compile them into a master array
+                Object.keys(dataSlices).forEach(key => {
+                    const envelope = dataSlices[key];
+                    ultimateEnvelope = envelope; // Keep reference to track the newest battery/ping states
+
+                    const cryptoKey = CryptoJS.SHA256(password);
+                    const iv = CryptoJS.enc.Utf8.parse('0123456789abcdef');
+                    const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: CryptoJS.enc.Base64.parse(envelope.encrypted) });
+                    const decrypted = CryptoJS.AES.decrypt(cipherParams, key, { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
+                    
+                    const pointsSlice = JSON.parse(decrypted.toString(CryptoJS.enc.Utf8));
+                    if (Array.isArray(pointsSlice)) {
+                        consolidatedPoints = consolidatedPoints.concat(pointsSlice);
+                    }
+                });
+
+                // Sort chronological timelines safely
+                consolidatedPoints.sort((a, b) => a.timestamp - b.timestamp);
+                rawTrackingHistory = consolidatedPoints;
+
+                if (rawTrackingHistory.length === 0) return;
+
+                expectedIntervalMs = ultimateEnvelope.interval_ms || 180000;
+                lastPingTimestamp = ultimateEnvelope.last_ping || Date.now();
                 
-                if (envelope.battery_level !== undefined) {
-                    const bLevel = envelope.battery_level;
-                    const bStatus = envelope.battery_status === "Charging" ? "⚡ Lädt" : "🔋 Akkubetrieb";
+                if (ultimateEnvelope.battery_level !== undefined) {
+                    const bLevel = ultimateEnvelope.battery_level;
+                    const bStatus = ultimateEnvelope.battery_status === "Charging" ? "⚡ Lädt" : "🔋 Akkubetrieb";
                     document.getElementById('battery').innerText = `${bLevel}% (${bStatus})`;
                 }
-
-                const key = CryptoJS.SHA256(password);
-                const iv = CryptoJS.enc.Utf8.parse('0123456789abcdef');
-                const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: CryptoJS.enc.Base64.parse(envelope.encrypted) });
-                const decrypted = CryptoJS.AES.decrypt(cipherParams, key, { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
-                
-                rawTrackingHistory = JSON.parse(decrypted.toString(CryptoJS.enc.Utf8));
-                if (rawTrackingHistory.length === 0) return;
 
                 const latestPoint = rawTrackingHistory[rawTrackingHistory.length - 1];
                 lastGpsTimestamp = latestPoint.timestamp;
                 document.getElementById('exact-time').innerText = `(${format24h(new Date(lastGpsTimestamp))})`;
 
-                updateAdventureStats();
+                updateTodayStats();
                 
                 const statusBadge = document.getElementById('status');
                 const now = Date.now();
@@ -204,9 +220,8 @@
                 filterAndRender();
                 updateTimeCounters();
             } catch (error) {
-                console.error("Decrypt error:", error);
-                document.getElementById('status').innerText = "Falsches Passwort!";
-                localStorage.removeItem('map_password'); // Wipe bad memory to re-prompt
+                console.error("Consolidation decryption loop error:", error);
+                document.getElementById('status').innerText = "Passwort Fehler";
             }
         });
 
@@ -230,22 +245,51 @@
         }
         setInterval(updateTimeCounters, 1000);
 
-        function updateAdventureStats() {
+        function updateTodayStats() {
             if (rawTrackingHistory.length === 0) return;
             
+            const startOfToday = new Date();
+            startOfToday.setHours(0,0,0,0);
+            const startOfTodayMs = startOfToday.getTime();
+
+            let todayPoints = rawTrackingHistory.filter(p => p.timestamp >= startOfTodayMs);
             let totalMeters = 0;
-            for (let i = 1; i < rawTrackingHistory.length; i++) {
-                totalMeters += map.distance([rawTrackingHistory[i-1].lat, rawTrackingHistory[i-1].lng], [rawTrackingHistory[i].lat, rawTrackingHistory[i].lng]);
+            
+            for (let i = 1; i < todayPoints.length; i++) {
+                totalMeters += map.distance([todayPoints[i-1].lat, todayPoints[i-1].lng], [todayPoints[i].lat, todayPoints[i].lng]);
             }
             
             const totalKm = (totalMeters / 1000).toFixed(1);
             const latest = rawTrackingHistory[rawTrackingHistory.length - 1];
             const currentSpeedKmh = (latest.speed * 3.6).toFixed(1);
-            const startTimeStr = format24h(new Date(rawTrackingHistory[0].timestamp));
+            
+            const firstPointTime = todayPoints.length > 0 ? format24h(new Date(todayPoints[0].timestamp)) : "--:--";
 
             document.getElementById('stat-dist').innerText = `${totalKm} km`;
             document.getElementById('stat-speed').innerText = `${currentSpeedKmh} km/h`;
-            document.getElementById('stat-start').innerText = startTimeStr;
+            document.getElementById('stat-start').innerText = firstPointTime;
+        }
+
+        function drawRoadSnappedLine(points, lineOpacity) {
+            if (points.length < 2) return;
+            const coordString = points.map(p => `${p.lng},${p.lat}`).join(';');
+            const url = `https://router.project-osrm.org/route/v1/driving/${coordString}?overview=full&geometries=geojson`;
+
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+                        const flippedCoordinates = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+                        L.polyline(flippedCoordinates, { color: '#2bc0d8', weight: 4, opacity: lineOpacity }).addTo(pathGroup);
+                    } else {
+                        const straightCoords = points.map(p => [p.lat, p.lng]);
+                        L.polyline(straightCoords, { color: '#e74c3c', weight: 3, opacity: lineOpacity, dashArray: '5,5' }).addTo(pathGroup);
+                    }
+                })
+                .catch(() => {
+                    const straightCoords = points.map(p => [p.lat, p.lng]);
+                    L.polyline(straightCoords, { color: '#e74c3c', weight: 3, opacity: lineOpacity, dashArray: '5,5' }).addTo(pathGroup);
+                });
         }
 
         function filterAndRender() {
@@ -253,46 +297,66 @@
 
             pathGroup.clearLayers();
             const mode = document.getElementById('view-mode').value;
-            const latestPoint = rawTrackingHistory[rawTrackingHistory.length - 1];
+            const nowMs = Date.now();
+            
+            let filteredPoints = [];
 
-            for (let i = 0; i < rawTrackingHistory.length; i++) {
-                const current = rawTrackingHistory[i];
-                const isLatest = (current.timestamp === latestPoint.timestamp);
+            if (mode === 'follow') {
+                const oneDayAgoMs = nowMs - (24 * 60 * 60 * 1000);
+                filteredPoints = rawTrackingHistory.filter(p => p.timestamp >= oneDayAgoMs);
+            } else if (mode === '3days') {
+                const threeDaysAgoMs = nowMs - (3 * 24 * 60 * 60 * 1000);
+                filteredPoints = rawTrackingHistory.filter(p => p.timestamp >= threeDaysAgoMs);
+            } else if (mode === '1week') {
+                const oneWeekAgoMs = nowMs - (7 * 24 * 60 * 60 * 1000);
+                filteredPoints = rawTrackingHistory.filter(p => p.timestamp >= oneWeekAgoMs);
+            } else {
+                filteredPoints = [...rawTrackingHistory]; // Whole 20 days cumulative journey profile
+            }
 
-                if (!isLatest) {
-                    let pointOpacity = 0.6;
-                    let pointFillOpacity = 0.3;
-                    
-                    if (mode === 'live') {
-                        const ageRatio = i / rawTrackingHistory.length;
-                        pointOpacity = 0.05 + (ageRatio * 0.55);
-                        pointFillOpacity = 0.02 + (ageRatio * 0.28);
-                    }
+            if (filteredPoints.length === 0) return;
 
-                    L.circleMarker([current.lat, current.lng], {
-                        radius: 4,
-                        color: '#9b59b6',
-                        fillColor: '#9b59b6',
-                        fillOpacity: pointFillOpacity,
-                        opacity: pointOpacity
-                    }).addTo(pathGroup);
+            // Route batching pipeline
+            if (mode === 'follow') {
+                const batchSize = 20;
+                for (let i = 0; i < filteredPoints.length; i += batchSize - 1) {
+                    const chunk = filteredPoints.slice(i, i + batchSize);
+                    if (chunk.length < 2) break;
+                    const ageRatio = i / filteredPoints.length;
+                    drawRoadSnappedLine(chunk, 0.15 + (ageRatio * 0.65));
                 }
-
-                if (i > 0) {
-                    const previous = rawTrackingHistory[i - 1];
-                    let lineOpacity = 0.6;
-                    if (mode === 'live') {
-                        lineOpacity = 0.1 + ((i / rawTrackingHistory.length) * 0.5);
-                    }
-
-                    L.polyline([[previous.lat, previous.lng], [current.lat, current.lng]], {
-                        color: '#2bc0d8',
-                        weight: 3,
-                        opacity: lineOpacity
-                    }).addTo(pathGroup);
+            } else {
+                const batchSize = 50;
+                for (let i = 0; i < filteredPoints.length; i += batchSize - 1) {
+                    const chunk = filteredPoints.slice(i, i + batchSize);
+                    if (chunk.length < 2) break;
+                    drawRoadSnappedLine(chunk, 0.75);
                 }
             }
 
+            // Dot clusters
+            for (let i = 0; i < filteredPoints.length; i++) {
+                const current = filteredPoints[i];
+                let pointOpacity = 0.6;
+                let pointFillOpacity = 0.3;
+                
+                if (mode === 'follow') {
+                    const ageRatio = i / filteredPoints.length;
+                    pointOpacity = 0.05 + (ageRatio * 0.55);
+                    pointFillOpacity = 0.02 + (ageRatio * 0.28);
+                }
+
+                L.circleMarker([current.lat, current.lng], {
+                    radius: 4,
+                    color: '#9b59b6',
+                    fillColor: '#9b59b6',
+                    fillOpacity: pointFillOpacity,
+                    opacity: pointOpacity
+                }).addTo(pathGroup);
+            }
+
+            // Glide Avatar Targets
+            const latestPoint = filteredPoints[filteredPoints.length - 1];
             const newTargetLatLng = [latestPoint.lat, latestPoint.lng];
             
             if (!liveGlidingMarker) {
@@ -302,7 +366,6 @@
                     iconSize: [50, 50],
                     iconAnchor: [25, 25]
                 });
-                
                 liveGlidingMarker = L.marker(newTargetLatLng, { icon: avatarIcon }).addTo(map);
                 map.setView(newTargetLatLng, 15);
             } else {
