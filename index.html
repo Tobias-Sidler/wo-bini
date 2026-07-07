@@ -38,7 +38,7 @@
         .switch input { opacity: 0; width: 0; height: 0; }
         .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .3s; border-radius: 24px; }
         .slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 4px; bottom: 4px; background-color: white; transition: .3s; border-radius: 50%; }
-        input:checked + .slider { background-color: #e74c3c; }
+        input:checked + .slider { background-color: #ff2a6d; }
         input:checked + .slider:before { transform: translateX(20px); }
 
         select {
@@ -53,22 +53,23 @@
             padding: 10px 25px; border-radius: 30px;
             box-shadow: 0 4px 20px rgba(0,0,0,0.15);
             display: flex; gap: 30px; font-family: sans-serif; text-align: center;
-            backdrop-filter: blur(5px); border: 1px solid rgba(231, 76, 60, 0.2);
+            backdrop-filter: blur(5px); border: 1px solid rgba(255, 42, 109, 0.3);
         }
         .stat-box { display: flex; flex-direction: column; }
-        .stat-val { font-size: 18px; font-weight: bold; color: #e74c3c; }
+        .stat-val { font-size: 18px; font-weight: bold; color: #ff2a6d; }
         .stat-lbl { font-size: 11px; color: #7f8c8d; text-transform: uppercase; margin-top: 2px; }
 
-        .custom-avatar-marker {
-            width: 50px; height: 50px;
-            border-radius: 50%; border: 3px solid #e74c3c;
-            box-shadow: 0 3px 10px rgba(0,0,0,0.3);
-            background-size: cover; background-position: center;
-            animation: pulseGlow 2s infinite alternate;
+        /* Back to Heart Emoji Style */
+        .heart-icon-style {
+            font-size: 38px;
+            text-align: center;
+            line-height: 1;
+            filter: drop-shadow(0px 4px 6px rgba(0, 0, 0, 0.4));
+            animation: heartPulse 1.2s infinite alternate ease-in-out;
         }
-        @keyframes pulseGlow {
-            0% { box-shadow: 0 0 5px rgba(231, 76, 60, 0.5); }
-            100% { box-shadow: 0 0 15px rgba(231, 76, 60, 0.9), 0 0 4px #e74c3c; }
+        @keyframes heartPulse {
+            0% { transform: scale(0.95); }
+            100% { transform: scale(1.15); }
         }
     </style>
 </head>
@@ -111,7 +112,7 @@
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 
     <script>
-        // Smooth slide marker system
+        // Smooth slide marker engine injection
         L.Marker.prototype.slideTo = function (latlng, options) {
             options = options || {};
             this._duration = options.duration || 1000;
@@ -134,7 +135,6 @@
         const firebaseConfig = {
             databaseURL: "https://wo-ischer-default-rtdb.europe-west1.firebasedatabase.app/"
         };
-        const USER_IMAGE_URL = 'https://github.com/Tobias-Sidler/wo-bini/blob/main/-.png'; 
 
         let password = localStorage.getItem('map_password');
         if (!password) {
@@ -169,23 +169,14 @@
                 const cryptoKey = CryptoJS.SHA256(password);
                 const iv = CryptoJS.enc.Utf8.parse('0123456789abcdef');
 
-                // FIX: Access inside dataSlices[key].encrypted instead of dataSlices[key] directly
                 Object.keys(dataSlices).forEach(key => {
                     const envelope = dataSlices[key];
                     if (!envelope || !envelope.encrypted) return;
                     
                     ultimateEnvelope = envelope; 
 
-                    const cipherParams = CryptoJS.lib.CipherParams.create({ 
-                        ciphertext: CryptoJS.enc.Base64.parse(envelope.encrypted) 
-                    });
-                    
-                    const decrypted = CryptoJS.AES.decrypt(cipherParams, cryptoKey, { 
-                        iv: iv, 
-                        mode: CryptoJS.mode.CBC, 
-                        padding: CryptoJS.pad.Pkcs7 
-                    });
-                    
+                    const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: CryptoJS.enc.Base64.parse(envelope.encrypted) });
+                    const decrypted = CryptoJS.AES.decrypt(cipherParams, cryptoKey, { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
                     const decryptedText = decrypted.toString(CryptoJS.enc.Utf8);
                     const pointsSlice = JSON.parse(decryptedText);
                     
@@ -230,7 +221,7 @@
                 filterAndRender();
                 updateTimeCounters();
             } catch (error) {
-                console.error("Decryption component break down:", error);
+                console.error("Decryption error:", error);
                 document.getElementById('status').innerText = "Passwort Fehler";
                 localStorage.removeItem('map_password');
             }
@@ -273,7 +264,6 @@
             const totalKm = (totalMeters / 1000).toFixed(1);
             const latest = rawTrackingHistory[rawTrackingHistory.length - 1];
             const currentSpeedKmh = (latest.speed * 3.6).toFixed(1);
-            
             const firstPointTime = todayPoints.length > 0 ? format24h(new Date(todayPoints[0].timestamp)) : "--:--";
 
             document.getElementById('stat-dist').innerText = `${totalKm} km`;
@@ -281,6 +271,7 @@
             document.getElementById('stat-start').innerText = firstPointTime;
         }
 
+        // HIGH-SATURATION ROAD ROUTING
         function drawRoadSnappedLine(points, lineOpacity) {
             if (points.length < 2) return;
             const coordString = points.map(p => `${p.lng},${p.lat}`).join(';');
@@ -291,15 +282,19 @@
                 .then(data => {
                     if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
                         const flippedCoordinates = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
-                        L.polyline(flippedCoordinates, { color: '#2bc0d8', weight: 4, opacity: lineOpacity }).addTo(pathGroup);
+                        
+                        // 1. Neon Pink outer glowing shadow backbone track
+                        L.polyline(flippedCoordinates, { color: '#ff2a6d', weight: 10, opacity: lineOpacity * 0.4 }).addTo(pathGroup);
+                        // 2. High-Saturated bold crimson center core line
+                        L.polyline(flippedCoordinates, { color: '#e74c3c', weight: 6, opacity: lineOpacity }).addTo(pathGroup);
                     } else {
                         const straightCoords = points.map(p => [p.lat, p.lng]);
-                        L.polyline(straightCoords, { color: '#e74c3c', weight: 3, opacity: lineOpacity, dashArray: '5,5' }).addTo(pathGroup);
+                        L.polyline(straightCoords, { color: '#ff2a6d', weight: 4, opacity: lineOpacity, dashArray: '6,6' }).addTo(pathGroup);
                     }
                 })
                 .catch(() => {
                     const straightCoords = points.map(p => [p.lat, p.lng]);
-                    L.polyline(straightCoords, { color: '#e74c3c', weight: 3, opacity: lineOpacity, dashArray: '5,5' }).addTo(pathGroup);
+                    L.polyline(straightCoords, { color: '#ff2a6d', weight: 4, opacity: lineOpacity, dashArray: '6,6' }).addTo(pathGroup);
                 });
         }
 
@@ -327,54 +322,57 @@
 
             if (filteredPoints.length === 0) return;
 
+            // Chunks routing rendering
             if (mode === 'follow') {
                 const batchSize = 20;
                 for (let i = 0; i < filteredPoints.length; i += batchSize - 1) {
                     const chunk = filteredPoints.slice(i, i + batchSize);
                     if (chunk.length < 2) break;
                     const ageRatio = i / filteredPoints.length;
-                    drawRoadSnappedLine(chunk, 0.15 + (ageRatio * 0.65));
+                    drawRoadSnappedLine(chunk, 0.20 + (ageRatio * 0.80)); // More aggressive opacity scaling
                 }
             } else {
                 const batchSize = 50;
                 for (let i = 0; i < filteredPoints.length; i += batchSize - 1) {
                     const chunk = filteredPoints.slice(i, i + batchSize);
                     if (chunk.length < 2) break;
-                    drawRoadSnappedLine(chunk, 0.75);
+                    drawRoadSnappedLine(chunk, 0.90); // Solid high visibility saturation
                 }
             }
 
+            // Saturated history trail point dots
             for (let i = 0; i < filteredPoints.length; i++) {
                 const current = filteredPoints[i];
-                let pointOpacity = 0.6;
-                let pointFillOpacity = 0.3;
+                let pointOpacity = 0.8;
+                let pointFillOpacity = 0.5;
                 
                 if (mode === 'follow') {
                     const ageRatio = i / filteredPoints.length;
-                    pointOpacity = 0.05 + (ageRatio * 0.55);
-                    pointFillOpacity = 0.02 + (ageRatio * 0.28);
+                    pointOpacity = 0.15 + (ageRatio * 0.65);
+                    pointFillOpacity = 0.10 + (ageRatio * 0.40);
                 }
 
                 L.circleMarker([current.lat, current.lng], {
-                    radius: 4,
-                    color: '#9b59b6',
-                    fillColor: '#9b59b6',
+                    radius: 5, // Slightly bigger
+                    color: '#ff2a6d',
+                    fillColor: '#e74c3c',
                     fillOpacity: pointFillOpacity,
                     opacity: pointOpacity
                 }).addTo(pathGroup);
             }
 
+            // Pulsing Heart Emoji Marker Configuration
             const latestPoint = filteredPoints[filteredPoints.length - 1];
             const newTargetLatLng = [latestPoint.lat, latestPoint.lng];
             
             if (!liveGlidingMarker) {
-                const avatarIcon = L.divIcon({
-                    className: 'custom-avatar-marker-wrapper',
-                    html: `<div class="custom-avatar-marker" style="background-image: url('${USER_IMAGE_URL}');"></div>`,
-                    iconSize: [50, 50],
-                    iconAnchor: [25, 25]
+                const heartIcon = L.divIcon({
+                    className: 'heart-marker-wrapper',
+                    html: `<div class="heart-icon-style">❤️</div>`,
+                    iconSize: [40, 40],
+                    iconAnchor: [20, 20]
                 });
-                liveGlidingMarker = L.marker(newTargetLatLng, { icon: avatarIcon }).addTo(map);
+                liveGlidingMarker = L.marker(newTargetLatLng, { icon: heartIcon }).addTo(map);
                 map.setView(newTargetLatLng, 15);
             } else {
                 liveGlidingMarker.slideTo(newTargetLatLng, { duration: 2500 });
