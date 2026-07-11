@@ -131,298 +131,346 @@
 
     <script>
         function toggleMenu() {
-            const panel = document.getElementById('control-panel');
-            const stats = document.getElementById('stats-panel');
-            panel.classList.toggle('panel-hidden');
-            stats.style.opacity = panel.classList.contains('panel-hidden') ? "0" : "1";
+    const panel = document.getElementById('control-panel');
+    const stats = document.getElementById('stats-panel');
+    panel.classList.toggle('panel-hidden');
+    stats.style.opacity = panel.classList.contains('panel-hidden') ? "0" : "1";
+}
+
+// Simple Kalman Filter for smoothing latitude and longitude
+class GPSKalmanFilter {
+    constructor(processNoise = 0.00003, measurementNoise = 0.0003) {
+        this.Q = processNoise;       // How fast the system can actually move
+        this.R = measurementNoise;   // How noisy the GPS sensor is
+        this.P = 1.0;                // Estimation error covariance
+        this.lastLat = null;
+        this.lastLng = null;
+    }
+
+    filter(lat, lng) {
+        if (this.lastLat === null) {
+            this.lastLat = lat;
+            this.lastLng = lng;
+            return { lat, lng };
         }
 
-        L.Marker.prototype.slideTo = function (latlng, options) {
-            options = options || {};
-            this._duration = options.duration || 1000;
-            this._startLatLng = this.getLatLng();
-            this._targetLatLng = L.latLng(latlng);
-            this._startTime = performance.now();
+        // 1. Predict (Guess based on last known state)
+        this.P = this.P + this.Q;
+
+        // 2. Update (Correct guess with new measurement)
+        const K = this.P / (this.P + this.R); // Kalman Gain
+        this.lastLat = this.lastLat + K * (lat - this.lastLat);
+        this.lastLng = this.lastLng + K * (lng - this.lastLng);
+        this.P = (1 - K) * this.P;
+
+        return { lat: this.lastLat, lng: this.lastLng };
+    }
+}
+
+L.Marker.prototype.slideTo = function (latlng, options) {
+    options = options || {};
+    this._duration = options.duration || 1000;
+    this._startLatLng = this.getLatLng();
+    this._targetLatLng = L.latLng(latlng);
+    this._startTime = performance.now();
+    
+    const animate = (time) => {
+        let progress = (time - this._startTime) / this._duration;
+        if (progress > 1) progress = 1;
+        let lat = this._startLatLng.lat + (this._targetLatLng.lat - this._startLatLng.lat) * progress;
+        let lng = this._startLatLng.lng + (this._targetLatLng.lng - this._startLatLng.lng) * progress;
+        this.setLatLng([lat, lng]);
+        if (progress < 1) this._animationFrame = requestAnimationFrame(animate);
+    };
+    cancelAnimationFrame(this._animationFrame);
+    this._animationFrame = requestAnimationFrame(animate);
+};
+
+const firebaseConfig = {
+    databaseURL: "https://wo-ischer-default-rtdb.europe-west1.firebasedatabase.app/"
+};
+
+let password = localStorage.getItem('map_password');
+if (!password) {
+    password = prompt("Bitte gib das Entschlüsselungs-Passwort ein:");
+    if (password) localStorage.setItem('map_password', password);
+}
+
+firebase.initializeApp(firebaseConfig);
+const databaseReference = firebase.database().ref('/points');
+
+const map = L.map('map').setView([0, 0], 2);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors'
+}).addTo(map);
+
+let rawTrackingHistory = [];
+let expectedIntervalMs = 180000;
+let lastPingTimestamp = Date.now();
+let lastGpsTimestamp = Date.now();
+
+const pathGroup = L.layerGroup().addTo(map);
+let liveGlidingMarker = null;
+
+databaseReference.on('value', (snapshot) => {
+    const dataSlices = snapshot.val();
+    if (!dataSlices) {
+        pathGroup.clearLayers();
+        if (liveGlidingMarker) { map.removeLayer(liveGlidingMarker); liveGlidingMarker = null; }
+        return;
+    }
+    
+    try {
+        let consolidatedPoints = [];
+        let ultimateEnvelope = null;
+
+        const cryptoKey = CryptoJS.SHA256(password);
+        const iv = CryptoJS.enc.Utf8.parse('0123456789abcdef');
+
+        Object.keys(dataSlices).forEach(key => {
+            const envelope = dataSlices[key];
+            if (!envelope || !envelope.encrypted) return;
+            ultimateEnvelope = envelope; 
+
+            const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: CryptoJS.enc.Base64.parse(envelope.encrypted) });
+            const decrypted = CryptoJS.AES.decrypt(cipherParams, cryptoKey, { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
+            const pointsSlice = JSON.parse(decrypted.toString(CryptoJS.enc.Utf8));
             
-            const animate = (time) => {
-                let progress = (time - this._startTime) / this._duration;
-                if (progress > 1) progress = 1;
-                let lat = this._startLatLng.lat + (this._targetLatLng.lat - this._startLatLng.lat) * progress;
-                let lng = this._startLatLng.lng + (this._targetLatLng.lng - this._startLatLng.lng) * progress;
-                this.setLatLng([lat, lng]);
-                if (progress < 1) this._animationFrame = requestAnimationFrame(animate);
-            };
-            cancelAnimationFrame(this._animationFrame);
-            this._animationFrame = requestAnimationFrame(animate);
-        };
-
-        const firebaseConfig = {
-            databaseURL: "https://wo-ischer-default-rtdb.europe-west1.firebasedatabase.app/"
-        };
-
-        let password = localStorage.getItem('map_password');
-        if (!password) {
-            password = prompt("Bitte gib das Entschlüsselungs-Passwort ein:");
-            if (password) localStorage.setItem('map_password', password);
-        }
-
-        firebase.initializeApp(firebaseConfig);
-        const databaseReference = firebase.database().ref('/points');
-
-        const map = L.map('map').setView([0, 0], 2);
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap contributors'
-        }).addTo(map);
-
-        let rawTrackingHistory = [];
-        let expectedIntervalMs = 180000;
-        let lastPingTimestamp = Date.now();
-        let lastGpsTimestamp = Date.now();
-        
-        const pathGroup = L.layerGroup().addTo(map);
-        let liveGlidingMarker = null;
-
-        databaseReference.on('value', (snapshot) => {
-            const dataSlices = snapshot.val();
-            if (!dataSlices) {
-                pathGroup.clearLayers();
-                if (liveGlidingMarker) { map.removeLayer(liveGlidingMarker); liveGlidingMarker = null; }
-                return;
-            }
-            
-            try {
-                let consolidatedPoints = [];
-                let ultimateEnvelope = null;
-
-                const cryptoKey = CryptoJS.SHA256(password);
-                const iv = CryptoJS.enc.Utf8.parse('0123456789abcdef');
-
-                Object.keys(dataSlices).forEach(key => {
-                    const envelope = dataSlices[key];
-                    if (!envelope || !envelope.encrypted) return;
-                    ultimateEnvelope = envelope; 
-
-                    const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: CryptoJS.enc.Base64.parse(envelope.encrypted) });
-                    const decrypted = CryptoJS.AES.decrypt(cipherParams, cryptoKey, { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
-                    const pointsSlice = JSON.parse(decrypted.toString(CryptoJS.enc.Utf8));
-                    
-                    if (Array.isArray(pointsSlice)) {
-                        consolidatedPoints = consolidatedPoints.concat(pointsSlice);
-                    }
-                });
-
-                consolidatedPoints.sort((a, b) => a.timestamp - b.timestamp);
-                rawTrackingHistory = consolidatedPoints;
-
-                if (rawTrackingHistory.length === 0) return;
-
-                expectedIntervalMs = ultimateEnvelope.interval_ms || 180000;
-                lastPingTimestamp = ultimateEnvelope.last_ping || Date.now();
-                
-                if (ultimateEnvelope.battery_level !== undefined) {
-                    const bLevel = ultimateEnvelope.battery_level;
-                    const bStatus = ultimateEnvelope.battery_status === "Charging" ? "⚡ Lädt" : "🔋 Akkubetrieb";
-                    document.getElementById('battery').innerText = `${bLevel}% (${bStatus})`;
-                }
-
-                const latestPoint = rawTrackingHistory[rawTrackingHistory.length - 1];
-                lastGpsTimestamp = latestPoint.timestamp;
-                document.getElementById('exact-time').innerText = `(${format24h(new Date(lastGpsTimestamp))})`;
-
-                updateTodayStats();
-                
-                const statusBadge = document.getElementById('status');
-                const now = Date.now();
-                if ((now - lastPingTimestamp) > (180000 * 2.5)) {
-                    statusBadge.innerText = "OFFLINE";
-                    statusBadge.className = "status-badge offline";
-                } else if (lastPingTimestamp > (lastGpsTimestamp + 10000)) {
-                    statusBadge.innerText = "Tobi steht still";
-                    statusBadge.className = "status-badge stationary";
-                } else {
-                    statusBadge.innerText = "Tobi is on the move";
-                    statusBadge.className = "status-badge online";
-                }
-
-                filterAndRender();
-                updateTimeCounters();
-            } catch (error) {
-                console.error("Decryption error:", error);
-                document.getElementById('status').innerText = "Passwort Fehler";
+            if (Array.isArray(pointsSlice)) {
+                consolidatedPoints = consolidatedPoints.concat(pointsSlice);
             }
         });
 
-        function format24h(dateObj) {
-            return `${String(dateObj.getHours()).padStart(2, '0')}:${String(dateObj.getMinutes()).padStart(2, '0')}`;
+        consolidatedPoints.sort((a, b) => a.timestamp - b.timestamp);
+
+        // Apply Kalman Filtering to the incoming trajectory history
+        const filterInstance = new GPSKalmanFilter();
+        rawTrackingHistory = consolidatedPoints.map(p => {
+            const smoothed = filterInstance.filter(p.lat, p.lng);
+            return { ...p, lat: smoothed.lat, lng: smoothed.lng };
+        });
+
+        if (rawTrackingHistory.length === 0) return;
+
+        expectedIntervalMs = ultimateEnvelope.interval_ms || 180000;
+        lastPingTimestamp = ultimateEnvelope.last_ping || Date.now();
+        
+        if (ultimateEnvelope.battery_level !== undefined) {
+            const bLevel = ultimateEnvelope.battery_level;
+            const bStatus = ultimateEnvelope.battery_status === "Charging" ? "⚡ Lädt" : "🔋 Akkubetrieb";
+            document.getElementById('battery').innerText = `${bLevel}% (${bStatus})`;
         }
 
-        function formatTimeAgo(timestamp) {
-            const diffSeconds = Math.floor((Date.now() - timestamp) / 1000);
-            if (diffSeconds < 5) return "Gerade eben";
-            if (diffSeconds < 60) return `vor ${diffSeconds} Sek.`;
-            const diffMinutes = Math.floor(diffSeconds / 60);
-            if (diffMinutes < 60) return `vor ${diffMinutes} Min.`;
-            return `vor ${Math.floor(diffMinutes / 60)} Std.`;
+        const latestPoint = rawTrackingHistory[rawTrackingHistory.length - 1];
+        lastGpsTimestamp = latestPoint.timestamp;
+        document.getElementById('exact-time').innerText = `(${format24h(new Date(lastGpsTimestamp))})`;
+
+        updateTodayStats();
+        
+        const statusBadge = document.getElementById('status');
+        const now = Date.now();
+        if ((now - lastPingTimestamp) > (180000 * 2.5)) {
+            statusBadge.innerText = "OFFLINE";
+            statusBadge.className = "status-badge offline";
+        } else if (lastPingTimestamp > (lastGpsTimestamp + 10000)) {
+            statusBadge.innerText = "Tobi steht still";
+            statusBadge.className = "status-badge stationary";
+        } else {
+            statusBadge.innerText = "Tobi is on the move";
+            statusBadge.className = "status-badge online";
         }
 
-        function updateTimeCounters() {
-            if (rawTrackingHistory.length === 0) return;
-            document.getElementById('relative-time').innerText = formatTimeAgo(lastGpsTimestamp);
-            document.getElementById('relative-ping').innerText = formatTimeAgo(lastPingTimestamp);
-        }
-        setInterval(updateTimeCounters, 1000);
+        filterAndRender();
+        updateTimeCounters();
+    } catch (error) {
+        console.error("Decryption error:", error);
+        document.getElementById('status').innerText = "Passwort Fehler";
+    }
+});
 
-        function updateTodayStats() {
-            if (rawTrackingHistory.length === 0) return;
-            
-            const startOfToday = new Date();
-            startOfToday.setHours(0,0,0,0);
-            const startOfTodayMs = startOfToday.getTime();
+function format24h(dateObj) {
+    return `${String(dateObj.getHours()).padStart(2, '0')}:${String(dateObj.getMinutes()).padStart(2, '0')}`;
+}
 
-            let todayPoints = rawTrackingHistory.filter(p => p.timestamp >= startOfTodayMs);
-            let totalMeters = 0;
-            
-            for (let i = 1; i < todayPoints.length; i++) {
-                totalMeters += map.distance([todayPoints[i-1].lat, todayPoints[i-1].lng], [todayPoints[i].lat, todayPoints[i].lng]);
-            }
-            
-            const totalKm = (totalMeters / 1000).toFixed(1);
-            const latest = rawTrackingHistory[rawTrackingHistory.length - 1];
-            const currentSpeedKmh = (latest.speed * 3.6).toFixed(1);
-            const firstPointTime = todayPoints.length > 0 ? format24h(new Date(todayPoints[0].timestamp)) : "--:--";
+function formatTimeAgo(timestamp) {
+    const diffSeconds = Math.floor((Date.now() - timestamp) / 1000);
+    if (diffSeconds < 5) return "Gerade eben";
+    if (diffSeconds < 60) return `vor ${diffSeconds} Sek.`;
+    const diffMinutes = Math.floor(diffSeconds / 60);
+    if (diffMinutes < 60) return `vor ${diffMinutes} Min.`;
+    return `vor ${Math.floor(diffMinutes / 60)} Std.`;
+}
 
-            document.getElementById('stat-dist').innerText = `${totalKm} km`;
-            document.getElementById('stat-speed').innerText = `${currentSpeedKmh} km/h`;
-            document.getElementById('stat-start').innerText = firstPointTime;
-        }
+function updateTimeCounters() {
+    if (rawTrackingHistory.length === 0) return;
+    document.getElementById('relative-time').innerText = formatTimeAgo(lastGpsTimestamp);
+    document.getElementById('relative-ping').innerText = formatTimeAgo(lastPingTimestamp);
+}
+setInterval(updateTimeCounters, 1000);
 
-        // UPDATED: Dynamically switches profile between foot and driving based on velocity metrics
-        function drawResilientMatchedTrail(points, lineOpacity, profileMode) {
-            if (points.length < 2) return;
-            const coordString = points.map(p => `${p.lng},${p.lat}`).join(';');
-            const radiuses = points.map(() => "30").join(';');
-            
-            const url = `https://router.project-osrm.org/match/v1/${profileMode}/${coordString}?overview=full&geometries=geojson&radiuses=${radiuses}`;
+function updateTodayStats() {
+    if (rawTrackingHistory.length === 0) return;
+    
+    const startOfToday = new Date();
+    startOfToday.setHours(0,0,0,0);
+    const startOfTodayMs = startOfToday.getTime();
 
-            fetch(url)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.code === 'Ok' && data.matchings && data.matchings.length > 0) {
-                        const flippedCoordinates = data.matchings[0].geometry.coordinates.map(c => [c[1], c[0]]);
-                        
-                        L.polyline(flippedCoordinates, { color: '#b026ff', weight: 10, opacity: lineOpacity * 0.35 }).addTo(pathGroup);
-                        L.polyline(flippedCoordinates, { color: '#ffffff', weight: 6, opacity: lineOpacity * 0.9 }).addTo(pathGroup);
-                        L.polyline(flippedCoordinates, { color: '#b026ff', weight: 4, opacity: lineOpacity }).addTo(pathGroup);
-                    } else {
-                        const straightCoords = points.map(p => [p.lat, p.lng]);
-                        L.polyline(straightCoords, { color: '#b026ff', weight: 4, opacity: lineOpacity * 0.8, dashArray: '4,4' }).addTo(pathGroup);
-                    }
-                })
-                .catch(() => {
-                    const straightCoords = points.map(p => [p.lat, p.lng]);
-                    L.polyline(straightCoords, { color: '#b026ff', weight: 4, opacity: lineOpacity * 0.8, dashArray: '4,4' }).addTo(pathGroup);
-                });
-        }
+    let todayPoints = rawTrackingHistory.filter(p => p.timestamp >= startOfTodayMs);
+    let totalMeters = 0;
+    
+    for (let i = 1; i < todayPoints.length; i++) {
+        totalMeters += map.distance([todayPoints[i-1].lat, todayPoints[i-1].lng], [todayPoints[i].lat, todayPoints[i].lng]);
+    }
+    
+    const totalKm = (totalMeters / 1000).toFixed(1);
+    const latest = rawTrackingHistory[rawTrackingHistory.length - 1];
+    const currentSpeedKmh = (latest.speed * 3.6).toFixed(1);
+    const firstPointTime = todayPoints.length > 0 ? format24h(new Date(todayPoints[0].timestamp)) : "--:--";
 
-        function filterAndRender() {
-            if (rawTrackingHistory.length === 0) return;
+    document.getElementById('stat-dist').innerText = `${totalKm} km`;
+    document.getElementById('stat-speed').innerText = `${currentSpeedKmh} km/h`;
+    document.getElementById('stat-start').innerText = firstPointTime;
+}
 
-            pathGroup.clearLayers();
-            const mode = document.getElementById('view-mode').value;
-            const nowMs = Date.now();
-            
-            let filteredPoints = [];
+function drawResilientMatchedTrail(points, lineOpacity, profileMode, isLatestBatch = false) {
+    if (points.length < 2) return;
+    const coordString = points.map(p => `${p.lng},${p.lat}`).join(';');
+    const radiuses = points.map(() => "40").join(';'); // Expanded window size for snap accuracy
+    
+    const url = `https://router.project-osrm.org/match/v1/${profileMode}/${coordString}?overview=full&geometries=geojson&radiuses=${radiuses}`;
 
-            if (mode === 'follow') {
-                const midnightToday = new Date();
-                midnightToday.setHours(0,0,0,0);
-                filteredPoints = rawTrackingHistory.filter(p => p.timestamp >= midnightToday.getTime());
-            } else if (mode === '3days') {
-                const threeDaysAgoMs = nowMs - (3 * 24 * 60 * 60 * 1000);
-                filteredPoints = rawTrackingHistory.filter(p => p.timestamp >= threeDaysAgoMs);
-            } else if (mode === '1week') {
-                const oneWeekAgoMs = nowMs - (7 * 24 * 60 * 60 * 1000);
-                filteredPoints = rawTrackingHistory.filter(p => p.timestamp >= oneWeekAgoMs);
-            } else {
-                filteredPoints = [...rawTrackingHistory]; 
-            }
-
-            if (filteredPoints.length === 0) return;
-
-            // UPDATED: Segments matching streams dynamically into foot or vehicle batches based on point-by-point velocities
-            const maxBatch = 20;
-            let currentChunk = [];
-            let currentMode = null;
-
-            for (let i = 0; i < filteredPoints.length; i++) {
-                const pt = filteredPoints[i];
-                // 15 km/h limit threshold (approx 4.16 m/s)
-                const ptMode = pt.speed > 4.16 ? "driving" : "foot";
-
-                if (currentChunk.length === 0) {
-                    currentChunk.push(pt);
-                    currentMode = ptMode;
-                } else if (ptMode === currentMode && currentChunk.length < maxBatch) {
-                    currentChunk.push(pt);
-                } else {
-                    // Flash out completed variant slice batches
-                    const opacityRatio = mode === 'follow' ? 0.3 + ((i / filteredPoints.length) * 0.7) : 0.85;
-                    drawResilientMatchedTrail(currentChunk, opacityRatio, currentMode);
-                    
-                    // Reset pipeline parameters and link current edge junction points together
-                    currentChunk = [currentChunk[currentChunk.length - 1], pt];
-                    currentMode = ptMode;
-                }
-            }
-            if (currentChunk.length >= 2) {
-                const opacityRatio = mode === 'follow' ? 0.95 : 0.85;
-                drawResilientMatchedTrail(currentChunk, opacityRatio, currentMode);
-            }
-
-            // High-Contrast trail marker rendering
-            for (let i = 0; i < filteredPoints.length; i++) {
-                const current = filteredPoints[i];
-                let pointOpacity = 0.8;
-                let pointFillOpacity = 0.5;
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            if (data.code === 'Ok' && data.matchings && data.matchings.length > 0) {
+                const flippedCoordinates = data.matchings[0].geometry.coordinates.map(c => [c[1], c[0]]);
                 
-                if (mode === 'follow') {
-                    const ageRatio = i / filteredPoints.length;
-                    pointOpacity = 0.20 + (ageRatio * 0.60);
-                    pointFillOpacity = 0.10 + (ageRatio * 0.40);
+                L.polyline(flippedCoordinates, { color: '#b026ff', weight: 10, opacity: lineOpacity * 0.35 }).addTo(pathGroup);
+                L.polyline(flippedCoordinates, { color: '#ffffff', weight: 6, opacity: lineOpacity * 0.9 }).addTo(pathGroup);
+                L.polyline(flippedCoordinates, { color: '#b026ff', weight: 4, opacity: lineOpacity }).addTo(pathGroup);
+
+                // Update the heart marker position to the *snapped* road coordinate
+                if (isLatestBatch && flippedCoordinates.length > 0) {
+                    const snappedLatestTarget = flippedCoordinates[flippedCoordinates.length - 1];
+                    updateLiveMarkerPosition(snappedLatestTarget);
                 }
-
-                L.circleMarker([current.lat, current.lng], {
-                    radius: 4,
-                    color: '#ffffff',
-                    fillColor: '#b026ff',
-                    fillOpacity: pointFillOpacity,
-                    opacity: pointOpacity,
-                    weight: 1
-                }).addTo(pathGroup);
-            }
-
-            const latestPoint = filteredPoints[filteredPoints.length - 1];
-            const newTargetLatLng = [latestPoint.lat, latestPoint.lng];
-            
-            if (!liveGlidingMarker) {
-                const heartIcon = L.divIcon({
-                    className: 'heart-marker-wrapper',
-                    html: `<div class="heart-icon-style">❤️</div>`,
-                    iconSize: [40, 40],
-                    iconAnchor: [20, 20]
-                });
-                liveGlidingMarker = L.marker(newTargetLatLng, { icon: heartIcon }).addTo(map);
-                map.setView(newTargetLatLng, 15);
             } else {
-                liveGlidingMarker.slideTo(newTargetLatLng, { duration: 2500 });
+                fallbackLine(points, lineOpacity, isLatestBatch);
             }
+        })
+        .catch(() => {
+            fallbackLine(points, lineOpacity, isLatestBatch);
+        });
+}
 
-            if (document.getElementById('auto-follow').checked) {
-                setTimeout(() => {
-                    map.panTo(newTargetLatLng, { animate: true, duration: 2.0 });
-                }, 300);
-            }
+function fallbackLine(points, lineOpacity, isLatestBatch) {
+    const straightCoords = points.map(p => [p.lat, p.lng]);
+    L.polyline(straightCoords, { color: '#b026ff', weight: 4, opacity: lineOpacity * 0.8, dashArray: '4,4' }).addTo(pathGroup);
+    if (isLatestBatch) {
+        updateLiveMarkerPosition([points[points.length - 1].lat, points[points.length - 1].lng]);
+    }
+}
+
+function updateLiveMarkerPosition(latLngArray) {
+    if (!liveGlidingMarker) {
+        const heartIcon = L.divIcon({
+            className: 'heart-marker-wrapper',
+            html: `<div class="heart-icon-style">❤️</div>`,
+            iconSize: [40, 40],
+            iconAnchor: [20, 20]
+        });
+        liveGlidingMarker = L.marker(latLngArray, { icon: heartIcon }).addTo(map);
+        map.setView(latLngArray, 15);
+    } else {
+        liveGlidingMarker.slideTo(latLngArray, { duration: 2000 });
+    }
+
+    if (document.getElementById('auto-follow').checked) {
+        map.panTo(latLngArray, { animate: true, duration: 1.5 });
+    }
+}
+
+function filterAndRender() {
+    if (rawTrackingHistory.length === 0) return;
+
+    pathGroup.clearLayers();
+    const mode = document.getElementById('view-mode').value;
+    const nowMs = Date.now();
+    
+    let filteredPoints = [];
+
+    if (mode === 'follow') {
+        const midnightToday = new Date();
+        midnightToday.setHours(0,0,0,0);
+        filteredPoints = rawTrackingHistory.filter(p => p.timestamp >= midnightToday.getTime());
+    } else if (mode === '3days') {
+        const threeDaysAgoMs = nowMs - (3 * 24 * 60 * 60 * 1000);
+        filteredPoints = rawTrackingHistory.filter(p => p.timestamp >= threeDaysAgoMs);
+    } else if (mode === '1week') {
+        const oneWeekAgoMs = nowMs - (7 * 24 * 60 * 60 * 1000);
+        filteredPoints = rawTrackingHistory.filter(p => p.timestamp >= oneWeekAgoMs);
+    } else {
+        filteredPoints = [...rawTrackingHistory]; 
+    }
+
+    if (filteredPoints.length === 0) return;
+
+    const maxBatch = 35; // Increased chunk size for better road matching continuity
+    let currentChunk = [];
+    let currentMode = null;
+
+    for (let i = 0; i < filteredPoints.length; i++) {
+        const pt = filteredPoints[i];
+        const ptMode = pt.speed > 4.16 ? "driving" : "foot";
+
+        if (currentChunk.length === 0) {
+            currentChunk.push(pt);
+            currentMode = ptMode;
+        } else if (ptMode === currentMode && currentChunk.length < maxBatch) {
+            currentChunk.push(pt);
+        } else {
+            const opacityRatio = mode === 'follow' ? 0.3 + ((i / filteredPoints.length) * 0.7) : 0.85;
+            // Overlapping point configuration: send the true last chunk item as context 
+            drawResilientMatchedTrail(currentChunk, opacityRatio, currentMode, false);
+            
+            // Keep the last point inside the next chunk window for routing continuity
+            currentChunk = [currentChunk[currentChunk.length - 1], pt];
+            currentMode = ptMode;
         }
+    }
+    
+    if (currentChunk.length >= 2) {
+        const opacityRatio = mode === 'follow' ? 0.95 : 0.85;
+        // The last active chunk controls where the live marker snaps to
+        drawResilientMatchedTrail(currentChunk, opacityRatio, currentMode, true);
+    } else if (filteredPoints.length > 0) {
+        // Safe fallback loop if the remaining chunk has isolated elements
+        const finalPt = filteredPoints[filteredPoints.length - 1];
+        updateLiveMarkerPosition([finalPt.lat, finalPt.lng]);
+    }
+
+    // High-Contrast trail marker rendering
+    for (let i = 0; i < filteredPoints.length; i++) {
+        const current = filteredPoints[i];
+        let pointOpacity = 0.8;
+        let pointFillOpacity = 0.5;
+        
+        if (mode === 'follow') {
+            const ageRatio = i / filteredPoints.length;
+            pointOpacity = 0.20 + (ageRatio * 0.60);
+            pointFillOpacity = 0.10 + (ageRatio * 0.40);
+        }
+
+        L.circleMarker([current.lat, current.lng], {
+            radius: 4,
+            color: '#ffffff',
+            fillColor: '#b026ff',
+            fillOpacity: pointFillOpacity,
+            opacity: pointOpacity,
+            weight: 1
+        }).addTo(pathGroup);
+    }
+}
     </script>
 </body>
 </html>
