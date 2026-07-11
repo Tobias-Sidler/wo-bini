@@ -17,7 +17,6 @@
             transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
         }
 
-        /* Toggle Button for Mobile Full-Screen Viewing */
         #menu-toggle {
             position: absolute; top: 15px; left: 15px; z-index: 1001;
             background: #b026ff; color: white; border: none; width: 40px; height: 40px;
@@ -185,7 +184,11 @@
 
         databaseReference.on('value', (snapshot) => {
             const dataSlices = snapshot.val();
-            if (!dataSlices) return;
+            if (!dataSlices) {
+                pathGroup.clearLayers();
+                if (liveGlidingMarker) { map.removeLayer(liveGlidingMarker); liveGlidingMarker = null; }
+                return;
+            }
             
             try {
                 let consolidatedPoints = [];
@@ -197,13 +200,11 @@
                 Object.keys(dataSlices).forEach(key => {
                     const envelope = dataSlices[key];
                     if (!envelope || !envelope.encrypted) return;
-                    
                     ultimateEnvelope = envelope; 
 
                     const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: CryptoJS.enc.Base64.parse(envelope.encrypted) });
                     const decrypted = CryptoJS.AES.decrypt(cipherParams, cryptoKey, { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
-                    const decryptedText = decrypted.toString(CryptoJS.enc.Utf8);
-                    const pointsSlice = JSON.parse(decryptedText);
+                    const pointsSlice = JSON.parse(decrypted.toString(CryptoJS.enc.Utf8));
                     
                     if (Array.isArray(pointsSlice)) {
                         consolidatedPoints = consolidatedPoints.concat(pointsSlice);
@@ -239,7 +240,7 @@
                     statusBadge.innerText = "Tobi steht still";
                     statusBadge.className = "status-badge stationary";
                 } else {
-                    statusBadge.innerText = "Tobi ist in Bewegung";
+                    statusBadge.innerText = "Tobi is on the move";
                     statusBadge.className = "status-badge online";
                 }
 
@@ -248,7 +249,6 @@
             } catch (error) {
                 console.error("Decryption error:", error);
                 document.getElementById('status').innerText = "Passwort Fehler";
-                localStorage.removeItem('map_password');
             }
         });
 
@@ -296,14 +296,13 @@
             document.getElementById('stat-start').innerText = firstPointTime;
         }
 
-        // Suggestion 1: OSRM Map Matching Engine with straight-line fallback filters
-        function drawResilientMatchedTrail(points, lineOpacity) {
+        // UPDATED: Dynamically switches profile between foot and driving based on velocity metrics
+        function drawResilientMatchedTrail(points, lineOpacity, profileMode) {
             if (points.length < 2) return;
             const coordString = points.map(p => `${p.lng},${p.lat}`).join(';');
-            
-            // Set 30-meter snapping lock profile thresholds
             const radiuses = points.map(() => "30").join(';');
-            const url = `https://router.project-osrm.org/match/v1/driving/${coordString}?overview=full&geometries=geojson&radiuses=${radiuses}`;
+            
+            const url = `https://router.project-osrm.org/match/v1/${profileMode}/${coordString}?overview=full&geometries=geojson&radiuses=${radiuses}`;
 
             fetch(url)
                 .then(response => response.json())
@@ -311,12 +310,10 @@
                     if (data.code === 'Ok' && data.matchings && data.matchings.length > 0) {
                         const flippedCoordinates = data.matchings[0].geometry.coordinates.map(c => [c[1], c[0]]);
                         
-                        // Suggestion 2: High-Contrast Neon Purple Trail Styles
                         L.polyline(flippedCoordinates, { color: '#b026ff', weight: 10, opacity: lineOpacity * 0.35 }).addTo(pathGroup);
                         L.polyline(flippedCoordinates, { color: '#ffffff', weight: 6, opacity: lineOpacity * 0.9 }).addTo(pathGroup);
                         L.polyline(flippedCoordinates, { color: '#b026ff', weight: 4, opacity: lineOpacity }).addTo(pathGroup);
                     } else {
-                        // Wilderness Fallback: Precise straight baseline
                         const straightCoords = points.map(p => [p.lat, p.lng]);
                         L.polyline(straightCoords, { color: '#b026ff', weight: 4, opacity: lineOpacity * 0.8, dashArray: '4,4' }).addTo(pathGroup);
                     }
@@ -336,7 +333,6 @@
             
             let filteredPoints = [];
 
-            // Suggestion 3: "Heute" strictly caps limits back to midnight local time instead of trailing rolling 24h windows
             if (mode === 'follow') {
                 const midnightToday = new Date();
                 midnightToday.setHours(0,0,0,0);
@@ -353,25 +349,37 @@
 
             if (filteredPoints.length === 0) return;
 
-            // Route execution loop blocks
-            if (mode === 'follow') {
-                const batchSize = 25;
-                for (let i = 0; i < filteredPoints.length; i += batchSize - 1) {
-                    const chunk = filteredPoints.slice(i, i + batchSize);
-                    if (chunk.length < 2) break;
-                    const ageRatio = i / filteredPoints.length;
-                    drawResilientMatchedTrail(chunk, 0.25 + (ageRatio * 0.75)); 
-                }
-            } else {
-                const batchSize = 50;
-                for (let i = 0; i < filteredPoints.length; i += batchSize - 1) {
-                    const chunk = filteredPoints.slice(i, i + batchSize);
-                    if (chunk.length < 2) break;
-                    drawResilientMatchedTrail(chunk, 0.85); 
+            // UPDATED: Segments matching streams dynamically into foot or vehicle batches based on point-by-point velocities
+            const maxBatch = 20;
+            let currentChunk = [];
+            let currentMode = null;
+
+            for (let i = 0; i < filteredPoints.length; i++) {
+                const pt = filteredPoints[i];
+                // 15 km/h limit threshold (approx 4.16 m/s)
+                const ptMode = pt.speed > 4.16 ? "driving" : "foot";
+
+                if (currentChunk.length === 0) {
+                    currentChunk.push(pt);
+                    currentMode = ptMode;
+                } else if (ptMode === currentMode && currentChunk.length < maxBatch) {
+                    currentChunk.push(pt);
+                } else {
+                    // Flash out completed variant slice batches
+                    const opacityRatio = mode === 'follow' ? 0.3 + ((i / filteredPoints.length) * 0.7) : 0.85;
+                    drawResilientMatchedTrail(currentChunk, opacityRatio, currentMode);
+                    
+                    // Reset pipeline parameters and link current edge junction points together
+                    currentChunk = [currentChunk[currentChunk.length - 1], pt];
+                    currentMode = ptMode;
                 }
             }
+            if (currentChunk.length >= 2) {
+                const opacityRatio = mode === 'follow' ? 0.95 : 0.85;
+                drawResilientMatchedTrail(currentChunk, opacityRatio, currentMode);
+            }
 
-            // High-Contrast trail marker points
+            // High-Contrast trail marker rendering
             for (let i = 0; i < filteredPoints.length; i++) {
                 const current = filteredPoints[i];
                 let pointOpacity = 0.8;
