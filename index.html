@@ -236,10 +236,10 @@
                     statusBadge.innerText = "OFFLINE";
                     statusBadge.className = "status-badge offline";
                 } else if (lastPingTimestamp > (lastGpsTimestamp + 10000)) {
-                    statusBadge.innerText = "PAUSE";
+                    statusBadge.innerText = "Tobi steht still";
                     statusBadge.className = "status-badge stationary";
                 } else {
-                    statusBadge.innerText = "IN BEWEGUNG";
+                    statusBadge.innerText = "Tobi ist in Bewegung";
                     statusBadge.className = "status-badge online";
                 }
 
